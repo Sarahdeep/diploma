@@ -1,0 +1,143 @@
+# Environments & Secrets
+# Ignore all .env files by default
+.env
+.env.*
+# Except for example or specific non-secret env files
+!.env.example
+!.env.template
+!.env.production.template
+!.env.development.template
+
+# Python
+## Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+## C extensions
+*.pyd
+*.so
+
+## Distribution / packaging
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+## PyInstaller (often in CI, but good to ignore locally)
+# *.manifest
+# *.spec
+
+## Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+## Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+## Celery
+celerybeat-schedule
+celerybeat.pid
+
+## Virtual environments
+.venv/
+env/
+venv/
+ENV/
+VENV/
+
+## SQLite databases (often used for local development)
+*.sqlite
+*.sqlite3
+*.db
+*.db3
+instance/ # Common for Flask/FastAPI instance folders with dev DB
+
+## General Log files
+logs/
+*.log
+
+# Backend specific (FastAPI/Uvicorn in /app)
+/app/.env # Specific .env for the app
+/app/uploads/ # If you have a directory for user uploads in app
+
+# Node.js / Frontend (inside /frontend directory)
+/frontend/node_modules/
+/frontend/dist/
+/frontend/dist-ssr/
+/frontend/.output/
+/frontend/.vite/
+/frontend/coverage/
+/frontend/npm-debug.log*
+/frontend/yarn-debug.log*
+/frontend/yarn-error.log*
+/frontend/pnpm-debug.log*
+/frontend/vite.config.ts.timestamp-* # Vite temporary files
+
+# Frontend Environment variables
+/frontend/.env
+/frontend/.env.*
+!/frontend/.env.example
+!/frontend/.env.template
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE configuration
+## JetBrains Rider/PyCharm/WebStorm/etc.
+.idea/
+*.iml
+
+## VSCode
+.vscode/*
+!.vscode/settings.json
+!.vscode/launch.json
+!.vscode/extensions.json
+!.vscode/tasks.json
+*.code-workspace
+
+## Other Editors
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw? 
+*.ipynb
+*fox*
+*.zip
+*.csv
+*.pdf
+*cursor*
+*alembic*
+*fox*

@@ -1,0 +1,71 @@
+version: '3'
+
+services:
+  app:
+    build: .
+    command: uvicorn main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+      - redis
+      - minio
+    volumes:
+      - ./app:/app  # Mount the backend source code for live reloading
+    environment:
+      - DATABASE_URL=postgresql://user:password@db:5432/mydb
+      - REDIS_URL=redis://redis:637
+      - MINIO_ENDPOINT=minio:9000          # <-- Internal endpoint for direct calls
+      - MINIO_PUBLIC_URL=http://localhost:9000 # <-- Public URL for presigning
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - MINIO_SECURE=False
+
+  db:
+    image: postgis/postgis:13-3.3
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: mydb
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+  minio:
+    image: minio/minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_DOMAIN: localhost  # Add domain alias to accept localhost in Host header
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+
+  frontend:
+    build:
+      context: ./frontend
+    command: npm run dev -- --host 0.0.0.0 --open false
+    ports:
+      - "3000:3000"
+    depends_on:
+      - app
+    volumes:
+      - ./frontend:/app 
+      - frontend_node_modules:/app/node_modules
+    working_dir: /app
+    environment:
+      - CHOKIDAR_USEPOLLING=true
+
+volumes:
+  postgres_data:
+  minio_data:
+  frontend_node_modules:
