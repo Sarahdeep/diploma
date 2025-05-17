@@ -3,8 +3,9 @@ import type { HabitatAreaRead, HabitatAreaCalculationRequest } from '../types/ap
 
 // Placeholder for token retrieval - reuse or centralize
 const getAuthToken = (): string | null => {
-  console.warn('(habitatService) getAuthToken() is a placeholder. Implement token retrieval.');
-  return null;
+  // console.warn('(habitatService) getAuthToken() is a placeholder. Implement token retrieval.');
+  // return null;
+  return localStorage.getItem('authToken');
 };
 
 const handleResponse = async (response: Response) => {
@@ -25,12 +26,12 @@ export const habitatService = {
     method: string,
     requestParams: HabitatAreaCalculationRequest
   ): Promise<{ message: string }> { // Backend returns a message for accepted task
-    const token = getAuthToken();
+    // const token = getAuthToken(); // Auth removed
     const response = await fetch(`${API_BASE_URL}/habitats/${speciesId}/${method}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`,
+        // 'Authorization': `Bearer ${token}`, // Auth removed
       },
       body: JSON.stringify(requestParams),
     });
@@ -43,36 +44,38 @@ export const habitatService = {
     skip: number = 0,
     limit: number = 100
   ): Promise<HabitatAreaRead[]> {
-    const token = getAuthToken();
+    // const token = getAuthToken(); // Auth removed
     let queryParams = `skip=${skip}&limit=${limit}`;
     if (speciesId !== undefined) queryParams += `&species_id=${speciesId}`;
     if (method !== undefined) queryParams += `&method=${method}`;
 
     const response = await fetch(`${API_BASE_URL}/habitats/?${queryParams}`, {
-      headers: {
-        // 'Authorization': `Bearer ${token}`, // Uncomment if GET requires auth
-      },
+      // headers: { // Auth removed
+      //   // 'Authorization': `Bearer ${token}`, // Uncomment if GET requires auth
+      //   ...(token && { 'Authorization': `Bearer ${token}` }),
+      // },
     });
     return handleResponse(response);
   },
 
   async getHabitatAreaById(habitatId: number): Promise<HabitatAreaRead> {
-    const token = getAuthToken();
+    // const token = getAuthToken(); // Auth removed
     const response = await fetch(`${API_BASE_URL}/habitats/${habitatId}`, {
-      headers: {
-        // 'Authorization': `Bearer ${token}`, // Uncomment if GET requires auth
-      },
+      // headers: { // Auth removed
+      //   // 'Authorization': `Bearer ${token}`, // Uncomment if GET requires auth
+      //   ...(token && { 'Authorization': `Bearer ${token}` }),
+      // },
     });
     return handleResponse(response);
   },
 
   async deleteHabitatArea(habitatId: number): Promise<HabitatAreaRead | null> { // Backend returns deleted area
-    const token = getAuthToken();
+    // const token = getAuthToken(); // Auth removed
     const response = await fetch(`${API_BASE_URL}/habitats/${habitatId}`, {
       method: 'DELETE',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-      },
+      // headers: { // Auth removed
+      //   'Authorization': `Bearer ${token}`,
+      // },
     });
     return handleResponse(response);
   },

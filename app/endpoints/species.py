@@ -7,7 +7,7 @@ from database import get_db
 
 router = APIRouter(
     tags=["Species"],
-    dependencies=[Depends(auth.get_current_active_user)], # Add auth if needed for all species endpoints
+    # dependencies=[Depends(auth.get_current_active_user)], # Auth removed
 )
 
 @router.post("/", response_model=schemas.Species, status_code=status.HTTP_201_CREATED)

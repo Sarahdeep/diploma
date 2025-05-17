@@ -55,7 +55,6 @@ app.include_router(species.router, prefix=f"{API_PREFIX}/species", tags=["Specie
 app.include_router(observations.router, prefix=f"{API_PREFIX}/observations", tags=["Observations"])
 app.include_router(habitats.router, prefix=f"{API_PREFIX}/habitats", tags=["Habitats"])
 
-# Initialize MinIO buckets on startup
 @app.on_event("startup")
 async def startup_event():
     try:
@@ -73,7 +72,6 @@ async def root():
 
 @app.get("/health", tags=["Health Check"])
 async def health():
-    """Проверка здоровья сервиса, включая подключение к БД"""
     status = {
         "service": "ok",
         "database": "unknown"

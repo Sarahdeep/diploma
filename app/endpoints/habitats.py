@@ -9,7 +9,7 @@ from spatial_analysis import calculate_mcp, calculate_kde # Assuming these funct
 router = APIRouter(
     prefix="/habitats",
     tags=["Habitats"],
-    dependencies=[Depends(auth.get_current_active_user)]
+    # dependencies=[Depends(auth.get_current_active_user)] # Auth removed
 )
 
 def run_habitat_calculation(species_id: int, method: str, request_params: schemas.HabitatAreaCalculationRequest, db: Session):
@@ -75,7 +75,7 @@ async def trigger_habitat_calculation(
     request_params: schemas.HabitatAreaCalculationRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    # current_user: models.User = Depends(auth.get_current_active_user) # Use if needed
+    # current_user: models.User = Depends(auth.get_current_active_user) # Auth removed
 ):
     """Triggers the calculation of a habitat area (MCP or KDE). Runs in the background."""
     # Basic validation

@@ -48,6 +48,17 @@ export interface SpeciesCreate {
   description?: string | null;
 }
 
+export interface DBSpeciesBase { // For species check response
+    id: number;
+    name: string;
+}
+
+export interface SpeciesCheckResponse { // For species check response
+    csv_species_names: string[];
+    db_species: DBSpeciesBase[];
+    unmatched_csv_species: string[];
+}
+
 // --- Observation Schemas ---
 export interface ObservationBase {
   timestamp: string; // ISO datetime string
@@ -86,6 +97,7 @@ export interface ObservationUpdate {
 }
 
 export interface ObservationFilterParams {
+  // id?: string; // Removed ID filter
   species_id?: number;
   start_date?: string; // ISO datetime string
   end_date?: string; // ISO datetime string
@@ -93,6 +105,12 @@ export interface ObservationFilterParams {
   min_lon?: number;
   max_lat?: number;
   max_lon?: number;
+  min_confidence?: number; // Added for filtering by minimum confidence
+}
+
+export interface ObservationListResponse {
+  observations: ObservationRead[];
+  total_count: number;
 }
 
 // --- HabitatArea Schemas ---

@@ -4,19 +4,20 @@ import * as React from "react"
 import { format } from "date-fns"
 import { Calendar as CalendarIcon } from "lucide-react"
 import { DateRange } from "react-day-picker"
-import { ControllerRenderProps } from "react-hook-form"
 import { Button } from "@/components/ui/button"
 import { Calendar } from "@/components/ui/calendar"
 import { cn } from "@/lib/utils"
 
 interface DatePickerWithRangeAlternativeProps extends Omit<React.HTMLAttributes<HTMLDivElement>, 'onChange'> {
-  field: ControllerRenderProps<any, 'dateRange'>;
+  value?: DateRange;
+  onValueChange?: (dateRange?: DateRange) => void;
   disabled?: boolean;
 }
 
 export function DatePickerWithRangeAlternative({
   className,
-  field,
+  value,
+  onValueChange,
   disabled = false
 }: DatePickerWithRangeAlternativeProps) {
   // Состояние для контроля отображения календаря
@@ -24,9 +25,7 @@ export function DatePickerWithRangeAlternative({
   const containerRef = React.useRef<HTMLDivElement>(null);
 
   // Ensure date is correctly formatted as DateRange for the Calendar component
-  const date: DateRange | undefined = field?.value ? 
-    { from: field.value.from || undefined, to: field.value.to || undefined } : 
-    undefined;
+  const date: DateRange | undefined = value;
 
   // Обработчик клика
   const handleButtonClick = (e: React.MouseEvent) => {
@@ -61,7 +60,7 @@ export function DatePickerWithRangeAlternative({
         variant={"outline"}
         className={cn(
           "w-full justify-start text-left font-normal",
-          !field?.value && "text-muted-foreground"
+          !date && "text-muted-foreground"
         )}
         disabled={disabled}
         onClick={handleButtonClick}
@@ -97,9 +96,11 @@ export function DatePickerWithRangeAlternative({
               selected={date}
               onSelect={(selectedDate) => {
                 console.log('Calendar selected:', selectedDate);
-                field?.onChange(selectedDate);
+                onValueChange?.(selectedDate);
                 // Закрываем попап только когда выбран полный диапазон
                 if (selectedDate?.from && selectedDate?.to) {
+                  setIsOpen(false);
+                } else if (!selectedDate?.from && !selectedDate?.to) {
                   setIsOpen(false);
                 }
               }}

@@ -1,4 +1,3 @@
-"""Utilities for extracting EXIF data from images."""
 import io
 import exifread
 from datetime import datetime

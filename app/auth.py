@@ -6,15 +6,15 @@ from jose import JWTError, jwt
 from datetime import datetime, timedelta
 from database import SessionLocal
 from models import User
-import schemas # Import schemas for TokenData and User
+import schemas
+import os
 
 router = APIRouter(
     tags=["Authentication"],
     responses={404: {"description": "Not found"}},
 )
 
-# Security
-SECRET_KEY = "YOUR_SECRET_KEY_HERE"  # In production, use environment variable
+SECRET_KEY = os.getenv("SECRET_KEY", "your_fallback_secret_key_for_development_only")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
@@ -41,31 +41,11 @@ def get_db():
     finally:
         db.close()
 
-async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        email: str | None = payload.get("sub")
-        if email is None:
-            raise credentials_exception
-        token_data = schemas.TokenData(email=email)
-    except JWTError:
-        raise credentials_exception
-    
-    user = db.query(User).filter(User.email == token_data.email).first()
-    if user is None:
-        raise credentials_exception
-    return user
+async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User | None:
+    return None
 
-async def get_current_active_user(current_user: User = Depends(get_current_user)) -> User:
-    # Add logic here if users can be deactivated, e.g.:
-    # if not current_user.is_active:
-    #     raise HTTPException(status_code=400, detail="Inactive user")
-    return current_user
+async def get_current_active_user(current_user: User | None = Depends(get_current_user)) -> User | None:
+    return None
 
 @router.post("/login")
 async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):

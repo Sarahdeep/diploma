@@ -4,8 +4,9 @@ import type { Species, SpeciesCreate } from '../types/api';
 // Placeholder for token retrieval - reuse from userService or centralize it
 const getAuthToken = (): string | null => {
   // Example: return localStorage.getItem('authToken');
-  console.warn('(speciesService) getAuthToken() is a placeholder. Implement token retrieval.');
-  return null;
+  // console.warn('(speciesService) getAuthToken() is a placeholder. Implement token retrieval.');
+  // return null;
+  return localStorage.getItem('authToken');
 };
 
 const handleResponse = async (response: Response) => {
@@ -22,12 +23,12 @@ const handleResponse = async (response: Response) => {
 
 export const speciesService = {
   async createSpecies(speciesData: SpeciesCreate): Promise<Species> {
-    const token = getAuthToken();
+    // const token = getAuthToken(); // Auth removed
     const response = await fetch(`${API_BASE_URL}/species/`, { // Note: species endpoint in backend is /species/
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`,
+        // 'Authorization': `Bearer ${token}`, // Auth removed
       },
       body: JSON.stringify(speciesData),
     });
@@ -35,32 +36,34 @@ export const speciesService = {
   },
 
   async getAllSpecies(skip: number = 0, limit: number = 100): Promise<Species[]> {
-    const token = getAuthToken(); // May or may not require token depending on your backend setup for GETs
+    // const token = getAuthToken(); // Auth removed
     const response = await fetch(`${API_BASE_URL}/species/?skip=${skip}&limit=${limit}`, {
-      headers: {
-        // 'Authorization': `Bearer ${token}`, // Uncomment if GET requires auth
-      },
+      // headers: { // Auth removed
+      //   // 'Authorization': `Bearer ${token}`, // Uncomment if GET requires auth
+      //   ...(token && { 'Authorization': `Bearer ${token}` }),
+      // },
     });
     return handleResponse(response);
   },
 
   async getSpeciesById(speciesId: number): Promise<Species> {
-    const token = getAuthToken();
+    // const token = getAuthToken(); // Auth removed
     const response = await fetch(`${API_BASE_URL}/species/${speciesId}`, {
-      headers: {
-        // 'Authorization': `Bearer ${token}`, // Uncomment if GET requires auth
-      },
+      // headers: { // Auth removed
+      //   // 'Authorization': `Bearer ${token}`, // Uncomment if GET requires auth
+      //   ...(token && { 'Authorization': `Bearer ${token}` }),
+      // },
     });
     return handleResponse(response);
   },
 
   async updateSpecies(speciesId: number, speciesData: SpeciesCreate): Promise<Species> {
-    const token = getAuthToken();
+    // const token = getAuthToken(); // Auth removed
     const response = await fetch(`${API_BASE_URL}/species/${speciesId}`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`,
+        // 'Authorization': `Bearer ${token}`, // Auth removed
       },
       body: JSON.stringify(speciesData),
     });
@@ -68,12 +71,12 @@ export const speciesService = {
   },
 
   async deleteSpecies(speciesId: number): Promise<Species | null> { // Backend returns the deleted species
-    const token = getAuthToken();
+    // const token = getAuthToken(); // Auth removed
     const response = await fetch(`${API_BASE_URL}/species/${speciesId}`, {
       method: 'DELETE',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-      },
+      // headers: { // Auth removed
+      //   'Authorization': `Bearer ${token}`,
+      // },
     });
     return handleResponse(response);
   },

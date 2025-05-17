@@ -17,12 +17,10 @@ interface Species {
   name: string;
 }
 
-interface Observation {
+interface ObservationProp {
   id: number;
-  lat: number;
-  lon: number;
-  species: string;
-  species_id?: number;
+  location: { type?: string; coordinates: [number, number] } | null;
+  species: { id: number; name: string };
   image_url?: string | null;
   classification_confidence?: number | null;
 }
@@ -31,7 +29,7 @@ interface EditObservationModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSave: (observationId: number, newSpeciesId: number) => Promise<void>;
-  observation: Observation | null;
+  observation: ObservationProp | null;
   speciesList: Species[];
   isLoading?: boolean;
 }
@@ -47,18 +45,16 @@ export const EditObservationModal: React.FC<EditObservationModalProps> = ({
   const [selectedSpeciesId, setSelectedSpeciesId] = useState<string>('');
 
   useEffect(() => {
-    if (observation) {
-        const currentSpecies = speciesList.find(s => s.name === observation.species);
-        setSelectedSpeciesId(currentSpecies ? String(currentSpecies.id) : '');
+    if (observation && observation.species) {
+        setSelectedSpeciesId(String(observation.species.id));
     } else {
         setSelectedSpeciesId('');
     }
   }, [observation, speciesList]);
 
   const handleSaveClick = async () => {
-    if (!observation || !selectedSpeciesId) return;
-    const currentSpecies = speciesList.find(s => s.name === observation.species);
-    if (currentSpecies && String(currentSpecies.id) === selectedSpeciesId) {
+    if (!observation || !selectedSpeciesId || !observation.species) return;
+    if (String(observation.species.id) === selectedSpeciesId) {
         onClose();
         return;
     }
@@ -102,7 +98,9 @@ export const EditObservationModal: React.FC<EditObservationModalProps> = ({
            <div className="grid grid-cols-4 items-center gap-4">
                 <Label className="text-right">Координаты</Label>
                 <span className="col-span-3 text-sm text-muted-foreground">
-                    {observation.lat.toFixed(6)}, {observation.lon.toFixed(6)}
+                    {observation.location 
+                        ? `${observation.location.coordinates[1].toFixed(6)}, ${observation.location.coordinates[0].toFixed(6)}` 
+                        : 'N/A'}
                 </span>
            </div>
 
@@ -143,7 +141,7 @@ export const EditObservationModal: React.FC<EditObservationModalProps> = ({
           <Button 
              type="button" 
              onClick={handleSaveClick} 
-             disabled={isLoading || !selectedSpeciesId || (speciesList.find(s => s.name === observation.species)?.id === parseInt(selectedSpeciesId, 10))}
+             disabled={isLoading || !selectedSpeciesId || (observation.species && observation.species.id === parseInt(selectedSpeciesId, 10))}
            >
             {isLoading ? "Сохранение..." : "Сохранить"}
           </Button>
