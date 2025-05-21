@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status, BackgroundTasks, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func as sql_func
-from typing import List, Dict, Union
+from typing import List, Dict, Union, Optional
 import json
 import models, schemas, auth
 from database import get_db, SessionLocal
@@ -80,7 +80,13 @@ async def create_observation(
 
 @router.get("/", response_model=schemas.ObservationListResponse)
 async def read_observations(
+    species_id: Optional[int] = Query(None, description="Filter observations by species ID"),
     filters: schemas.ObservationFilterParams = Depends(), 
+    min_confidence: Optional[float] = Query(None, ge=0, le=1, description="Minimum classification confidence"),
+    min_lat: Optional[float] = Query(None, description="Minimum latitude for BBOX filter"),
+    min_lon: Optional[float] = Query(None, description="Minimum longitude for BBOX filter"),
+    max_lat: Optional[float] = Query(None, description="Maximum latitude for BBOX filter"),
+    max_lon: Optional[float] = Query(None, description="Maximum longitude for BBOX filter"),
     skip: int = 0, 
     limit: int = 100, 
     db: Session = Depends(get_db)
@@ -91,31 +97,33 @@ async def read_observations(
     parsed_start_date = None
     if filters.start_date:
         try:
-            parsed_start_date = datetime.fromisoformat(filters.start_date.replace('Z', '+00:00'))
+            parsed_start_date = filters.start_date if isinstance(filters.start_date, datetime) else datetime.fromisoformat(str(filters.start_date).replace('Z', '+00:00'))
         except ValueError:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid start_date format: {filters.start_date}. Expected ISO 8601 format (YYYY-MM-DDTHH:MM:SSZ).")
 
     parsed_end_date = None
     if filters.end_date:
         try:
-            parsed_end_date = datetime.fromisoformat(filters.end_date.replace('Z', '+00:00'))
+            parsed_end_date = filters.end_date if isinstance(filters.end_date, datetime) else datetime.fromisoformat(str(filters.end_date).replace('Z', '+00:00'))
         except ValueError:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid end_date format: {filters.end_date}. Expected ISO 8601 format (YYYY-MM-DDTHH:MM:SSZ).")
 
-    if filters.species_id:
-        query = query.filter(models.Observation.species_id == filters.species_id)
-        count_query = count_query.filter(models.Observation.species_id == filters.species_id)
+    if species_id is not None:
+        query = query.filter(models.Observation.species_id == species_id)
+        count_query = count_query.filter(models.Observation.species_id == species_id)
     if parsed_start_date:
         query = query.filter(models.Observation.timestamp >= parsed_start_date)
         count_query = count_query.filter(models.Observation.timestamp >= parsed_start_date)
     if parsed_end_date:
         query = query.filter(models.Observation.timestamp <= parsed_end_date)
         count_query = count_query.filter(models.Observation.timestamp <= parsed_end_date)
-    if filters.min_confidence is not None:
-        query = query.filter(models.Observation.classification_confidence >= filters.min_confidence)
-        count_query = count_query.filter(models.Observation.classification_confidence >= filters.min_confidence)
-    if filters.min_lat is not None and filters.min_lon is not None and filters.max_lat is not None and filters.max_lon is not None:
-        bbox = sql_func.ST_MakeEnvelope(filters.min_lon, filters.min_lat, filters.max_lon, filters.max_lat, 4326)
+    
+    if min_confidence is not None:
+        query = query.filter(models.Observation.classification_confidence >= min_confidence)
+        count_query = count_query.filter(models.Observation.classification_confidence >= min_confidence)
+    
+    if min_lat is not None and min_lon is not None and max_lat is not None and max_lon is not None:
+        bbox = sql_func.ST_MakeEnvelope(min_lon, min_lat, max_lon, max_lat, 4326)
         query = query.filter(sql_func.ST_Within(models.Observation.location, bbox))
         count_query = count_query.filter(sql_func.ST_Within(models.Observation.location, bbox))
 
@@ -151,9 +159,10 @@ async def read_observation_by_id(observation_id: int, db: Session = Depends(get_
 
 @router.put("/{observation_id}", response_model=schemas.ObservationRead)
 async def update_observation(
-    observation_id: int, 
-    obs_update: schemas.ObservationUpdate, 
-    db: Session = Depends(get_db)
+    observation_id: int,
+    obs_update: schemas.ObservationCreate,
+    db: Session = Depends(get_db),
+    # current_user: models.User = Depends(auth.get_current_active_user) # Auth removed
 ):
     db_observation = db.query(models.Observation).filter(models.Observation.id == observation_id).first()
     if db_observation is None:

@@ -25,5 +25,24 @@ export default defineConfig({
   },
   build: {
     outDir: 'build' 
+  },
+  worker: {
+    format: 'es',
+    plugins: [
+      {
+        name: 'worker-imports',
+        transform(code, id) {
+          if (id.endsWith('.worker.ts')) {
+            return {
+              code: code.replace(/import\s+.*\s+from\s+['"]@turf\/turf['"];?/g, ''),
+              map: null
+            };
+          }
+        }
+      }
+    ]
+  },
+  optimizeDeps: {
+    include: ['@turf/turf']
   }
 })

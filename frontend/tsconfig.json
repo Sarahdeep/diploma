@@ -11,6 +11,7 @@
     "compilerOptions": {
       "baseUrl": ".",
       "paths": {
+        "react-leaflet-heatmap-layer-v3": ["./src/types/react-leaflet-heatmap-layer-v3.d.ts"],
         "@/*": ["./src/*"]
       },
     }

@@ -1,19 +1,35 @@
-import React, { useState, useEffect, useCallback, CSSProperties } from 'react';
+import React, { useState, useEffect, useCallback, CSSProperties, useRef } from 'react';
 import axios from 'axios';
 import 'leaflet/dist/leaflet.css';
-// Removed marker cluster CSS import - styles might be bundled
-// import 'react-leaflet-markercluster/dist/styles.css'; 
-import { MapContainer, TileLayer, Marker, Popup, GeoJSON } from 'react-leaflet';
+import L, { LatLngExpression, LeafletEvent, Layer as LeafletLayer } from 'leaflet';
+import { MapContainer, TileLayer, Marker, Popup, GeoJSON, LayersControl, FeatureGroup, ScaleControl } from 'react-leaflet';
 import MarkerClusterGroup from 'react-leaflet-markercluster';
-import L, { LatLngExpression, LeafletEvent } from 'leaflet';
-import { Spin, Alert, Select, DatePicker, Button, Checkbox, Row, Col, Card, message } from 'antd';
-import type { CheckboxChangeEvent } from 'antd/es/checkbox';
-import type { Feature, FeatureCollection, Point, Polygon, MultiPolygon } from 'geojson'; // Import GeoJSON types
-
-const { RangePicker } = DatePicker;
+import { HeatmapLayer } from 'react-leaflet-heatmap-layer-v3';
+import { Spin, Alert, Row, Col, Card } from 'antd';
+import { Toaster } from '@/components/ui/sonner';
+import { toast } from 'sonner';
+import * as turf from '@turf/turf';
+import type { Feature, FeatureCollection, Point, Polygon, MultiPolygon } from 'geojson';
+import {
+  Species,
+  GridPoint,
+  HabitatOverlap,
+  ObservationResponse,
+  ObservationFeature,
+  HabitatAreaFeature,
+  HabitatAreaResponse,
+  MapFeature,
+  HabitatAreaPreviewResponse,
+  OverlapResult,
+  CalculatedHabitat,
+  LayerVisibility,
+  ObservationCache,
+  HeatmapPoint
+} from '@/types/map';
+import MapControls from '@/components/MapControls/MapControls';
+import ObservationsLayer from '@/components/MapLayers/ObservationsLayer';
 
 // --- Leaflet Icon Setup ---
-// (Ensure these images are available in your public/images folder)
 delete (L.Icon.Default.prototype as any)._getIconUrl;
 L.Icon.Default.mergeOptions({
   iconRetinaUrl: '/images/marker-icon-2x.png',
@@ -21,52 +37,13 @@ L.Icon.Default.mergeOptions({
   shadowUrl: '/images/marker-shadow.png',
 });
 
-// --- Type Definitions (Align with Backend Schemas) ---
-
-interface Species {
-  id: number;
-  name: string;
-  description?: string;
-}
-
-// Observation GeoJSON Feature
-interface ObservationFeature extends Feature<Point> {
-  properties: {
-    id: number;
-    species_id: number;
-    species_name?: string; // Add if backend includes this for convenience
-    timestamp: string;
-    image_url?: string;
-    source?: string;
-    classification_confidence?: number;
-    user_id?: number;
-  };
-}
-
-// Habitat Area GeoJSON Feature
-interface HabitatAreaFeature extends Feature<Polygon | MultiPolygon> {
-  properties: {
-    id: number;
-    species_id: number;
-    species_name?: string; // Add if backend includes this
-    method: 'MCP' | 'KDE';
-    parameters: Record<string, any>; // JSON object
-    calculated_at: string;
-    source_observation_count?: number;
-  };
-}
-
-// Combine into a single Feature type for GeoJSON component
-type MapFeature = ObservationFeature | HabitatAreaFeature;
-
 // --- Configuration ---
-const API_BASE_URL = '/api/v1'; // Your FastAPI prefix
-const MAP_INITIAL_CENTER: LatLngExpression = [55.75, 37.61]; // Centered somewhat on Moscow
+const API_BASE_URL = '/api/v1';
+const MAP_INITIAL_CENTER: LatLngExpression = [55.75, 37.61];
 const MAP_INITIAL_ZOOM = 4;
 
 const axiosInstance = axios.create({
   baseURL: API_BASE_URL,
-  // Add auth headers if needed
 });
 
 // --- Helper Function for Color ---
@@ -83,239 +60,614 @@ const stringToColor = (str: string): string => {
   return color;
 };
 
-// --- Component ---
+// Add conversion function
+const metersToDegrees = (meters: number, latitude: number = 55.75): number => {
+  const EARTH_RADIUS = 6371000;
+  const radians = meters / EARTH_RADIUS;
+  const degrees = radians * (180 / Math.PI);
+  return degrees / Math.cos(latitude * (Math.PI / 180));
+};
 
 function GeoDataMapPage(): JSX.Element {
   const [speciesList, setSpeciesList] = useState<Species[]>([]);
   const [selectedSpeciesIds, setSelectedSpeciesIds] = useState<number[]>([]);
-  const [dateRange, setDateRange] = useState<[string | null, string | null]>([null, null]);
+  const [dateRange, setDateRange] = useState<[string, string]>(['', '']);
   const [showObservations, setShowObservations] = useState(true);
-  const [showMCP, setShowMCP] = useState(false);
-  const [showKDE, setShowKDE] = useState(false);
+  const [showMCP, setShowMCP] = useState(true);
+  const [showKDE, setShowKDE] = useState(true);
+  const [showHeatmap, setShowHeatmap] = useState(false);
 
   const [observations, setObservations] = useState<ObservationFeature[]>([]);
+  const [heatmapPoints, setHeatmapPoints] = useState<HeatmapPoint[]>([]);
   const [habitatAreas, setHabitatAreas] = useState<HabitatAreaFeature[]>([]);
 
   const [mapCenter, setMapCenter] = useState<LatLngExpression>(MAP_INITIAL_CENTER);
   const [mapZoom, setMapZoom] = useState<number>(MAP_INITIAL_ZOOM);
-  const [mapBounds, setMapBounds] = useState<L.LatLngBounds | null>(null); // Store current map bounds
+  const [mapBounds, setMapBounds] = useState<L.LatLngBounds | null>(null);
 
   const [isLoadingSpecies, setIsLoadingSpecies] = useState<boolean>(false);
   const [isLoadingObservations, setIsLoadingObservations] = useState<boolean>(false);
   const [isLoadingHabitats, setIsLoadingHabitats] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
+  const [overlapData, setOverlapData] = useState<HabitatOverlap | null>(null);
+  const [isLoadingOverlap, setIsLoadingOverlap] = useState<boolean>(false);
+
+  const [calculatedKDE, setCalculatedKDE] = useState<HabitatAreaFeature | null>(null);
+  const [calculatedMCP, setCalculatedMCP] = useState<HabitatAreaFeature | null>(null);
+  const [isLoadingPreview, setIsLoadingPreview] = useState<boolean>(false);
+  const [lastPreviewRequest, setLastPreviewRequest] = useState<any>(null);
+
+  const [mcpInputParams, setMcpInputParams] = useState<{ percentage: number }>({ percentage: 95 });
+  const [kdeInputParams, setKdeInputParams] = useState<{ h_meters: number; level_percent: number; grid_size: number }>({ 
+    h_meters: 1000,
+    level_percent: 90, 
+    grid_size: 100 
+  });
+
   const mapRef = React.useRef<L.Map | null>(null);
 
-  // --- Data Fetching Callbacks ---
+  const [heatmapLayer, setHeatmapLayer] = useState<L.Layer | null>(null);
+  const [maxDensity, setMaxDensity] = useState<number | null>(null);
+  const [overlapResult, setOverlapResult] = useState<OverlapResult | null>(null);
+  const [calculatedHabitats, setCalculatedHabitats] = useState<CalculatedHabitat[]>([]);
+  const [layerVisibility, setLayerVisibility] = useState<LayerVisibility>({});
+  const [heatmapDataReady, setHeatmapDataReady] = useState<{[key: number]: boolean}>({});
+  const [observationCache, setObservationCache] = useState<ObservationCache[]>([]);
+  const [isLoadingNewObservations, setIsLoadingNewObservations] = useState<boolean>(false);
+  const [isCalculatingOverlap, setIsCalculatingOverlap] = useState<boolean>(false);
+  const [overlapCalculationProgress, setOverlapCalculationProgress] = useState<number>(0);
+  const overlapWorkerRef = useRef<Worker | null>(null);
+  const [needsOverlapRecalculation, setNeedsOverlapRecalculation] = useState<boolean>(false);
+  const [overlapResults, setOverlapResults] = useState<Array<{
+    species1: CalculatedHabitat;
+    species2: CalculatedHabitat;
+    overlap: OverlapResult;
+  }>>([]);
+
+  useEffect(() => {
+    overlapWorkerRef.current = new Worker(new URL('../workers/overlapWorker.ts', import.meta.url), { type: 'module' });
+    
+    overlapWorkerRef.current.onmessage = (e) => {
+      const { points, maxIntensity } = e.data;
+      
+      setOverlapResults(prev => prev.map(result => {
+        if (result.overlap.intensity_data) {
+          return {
+            ...result,
+            overlap: {
+              ...result.overlap,
+              intensity_data: {
+                points,
+                max_intensity: maxIntensity
+              }
+            }
+          };
+        }
+        return result;
+      }));
+      
+      setIsCalculatingOverlap(false);
+      setOverlapCalculationProgress(0);
+    };
+
+    return () => {
+      overlapWorkerRef.current?.terminate();
+    };
+  }, []);
 
   const fetchSpecies = useCallback(async () => {
     setIsLoadingSpecies(true);
-      setError(null);
-      try {
+    setError(null);
+    try {
       const response = await axiosInstance.get<Species[]>('/species/');
       setSpeciesList(response.data);
-      } catch (e: any) {
-      console.error('Failed to fetch species:', e);
+    } catch (e: any) {
       setError(`Failed to load species: ${e.response?.data?.detail || e.message || 'Unknown error'}`);
-      message.error('Failed to load species list.');
-      } finally {
+      toast.error('Ошибка загрузки списка видов');
+    } finally {
       setIsLoadingSpecies(false);
-      }
+    }
   }, []);
 
-  const fetchObservations = useCallback(async () => {
-    if (!showObservations || selectedSpeciesIds.length === 0) {
-        setObservations([]);
+  const fetchObservations = useCallback(async (forceRefresh: boolean = false) => {
+    if ((!showObservations && !showHeatmap) || selectedSpeciesIds.length === 0) {
+      setObservations([]);
+      setHeatmapPoints([]);
       return;
     }
-    setIsLoadingObservations(true);
+
+    if (!mapBounds) return;
+
+    const existingCache = observationCache.find(cache => 
+      cache.bounds.contains(mapBounds.getNorthEast()) && 
+      cache.bounds.contains(mapBounds.getSouthWest())
+    );
+
+    if (existingCache && !forceRefresh) {
+      if (showObservations) {
+        setObservations(existingCache.observations);
+      }
+      if (showHeatmap) {
+        setHeatmapPoints(existingCache.observations.map(obs => ({
+          lat: obs.geometry.coordinates[1],
+          lng: obs.geometry.coordinates[0],
+          intensity: 1.0
+        })));
+      }
+      return;
+    }
+
+    const needsNewData = !existingCache || 
+      !existingCache.bounds.contains(mapBounds.getNorthEast()) || 
+      !existingCache.bounds.contains(mapBounds.getSouthWest());
+
+    if (!needsNewData && !forceRefresh) return;
+
+    setIsLoadingNewObservations(true);
     setError(null);
 
-    // Use Promise.all to fetch for multiple species
-    const fetchPromises = selectedSpeciesIds.map(speciesId => {
+    try {
+      const fetchPromises = selectedSpeciesIds.map(speciesId => {
         const params = new URLSearchParams();
         params.append('species_id', speciesId.toString());
         if (dateRange[0]) params.append('start_date', dateRange[0]);
         if (dateRange[1]) params.append('end_date', dateRange[1]);
-        params.append('limit', '1000'); // Adjust limit as needed
+        params.append('limit', '2000');
 
-        // Optional: Filter by map bounds
-        if (mapBounds) {
-          params.append('min_lon', mapBounds.getWest().toString());
-          params.append('min_lat', mapBounds.getSouth().toString());
-          params.append('max_lon', mapBounds.getEast().toString());
-          params.append('max_lat', mapBounds.getNorth().toString());
-        }
+        const bufferedBounds = mapBounds.pad(0.1);
+        params.append('min_lon', bufferedBounds.getWest().toString());
+        params.append('min_lat', bufferedBounds.getSouth().toString());
+        params.append('max_lon', bufferedBounds.getEast().toString());
+        params.append('max_lat', bufferedBounds.getNorth().toString());
 
-        return axiosInstance.get<ObservationFeature[]>('/observations/', { params });
-    });
-
-    try {
-      const responses = await Promise.all(fetchPromises);
-      // Combine results from all species, potentially adding species name
-      const allObservations = responses.flatMap(response => {
-        const speciesId = parseInt(new URL(response.config.url || '', response.config.baseURL).searchParams.get('species_id') || '0');
-        const species = speciesList.find(s => s.id === speciesId);
-        return response.data.map(obs => ({
-             ...obs,
-             // Convert backend lat/lon point to GeoJSON Feature
-             type: 'Feature' as const,
-             geometry: {
-                 type: 'Point' as const,
-                 // IMPORTANT: Ensure backend sends lon, lat in the correct order for GeoJSON
-                 coordinates: (obs as any).location?.coordinates || [0,0], // Adapt based on actual backend response structure
-             },
-             properties: {
-                 ...obs.properties,
-                 id: (obs as any).id, // Ensure properties exist
-                 species_id: speciesId,
-                 species_name: species?.name || `Species ${speciesId}`,
-                 timestamp: (obs as any).timestamp
-             }
-         }));
+        return axiosInstance.get<ObservationResponse>('/observations/', { params });
       });
-      setObservations(allObservations);
-      } catch (e: any) {
+
+      const responses = await Promise.all(fetchPromises);
+      const allObsFeatures: ObservationFeature[] = [];
+      const currentHeatmapPoints: HeatmapPoint[] = [];
+
+      responses.forEach((response) => {
+        (response.data.observations || []).forEach((obs: any) => {
+          const feature = {
+            type: 'Feature' as const,
+            geometry: {
+              type: 'Point' as const,
+              coordinates: obs.location.coordinates
+            },
+            properties: {
+              id: obs.id,
+              species_id: obs.species_id,
+              species_name: (speciesList.find(s => s.id === obs.species_id)?.name) || `Species ${obs.species_id}`,
+              timestamp: obs.timestamp,
+              image_url: obs.image_url,
+              source: obs.source,
+              classification_confidence: obs.classification_confidence,
+              user_id: obs.user_id
+            }
+          } as ObservationFeature;
+          allObsFeatures.push(feature);
+          
+          currentHeatmapPoints.push({
+            lat: obs.location.coordinates[1],
+            lng: obs.location.coordinates[0],
+            intensity: obs.density || 1.0
+          });
+        });
+      });
+
+      setObservationCache(prev => {
+        const newCache = {
+          bounds: mapBounds.pad(0.1),
+          observations: allObsFeatures
+        };
+        
+        const filteredCache = prev.filter(cache => 
+          !cache.bounds.intersects(newCache.bounds)
+        );
+
+        const mergedObservations = [...allObsFeatures];
+        prev.forEach(cache => {
+          if (cache.bounds.intersects(newCache.bounds)) {
+            cache.observations.forEach(obs => {
+              if (!mergedObservations.some(newObs => newObs.properties.id === obs.properties.id)) {
+                mergedObservations.push(obs);
+              }
+            });
+          }
+        });
+        
+        return [...filteredCache, { ...newCache, observations: mergedObservations }];
+      });
+      
+      if (showObservations) {
+        setObservations(allObsFeatures);
+      }
+      if (showHeatmap) {
+        setHeatmapPoints(currentHeatmapPoints);
+      }
+
+    } catch (e: any) {
       console.error('Failed to fetch observations:', e);
       setError(`Failed to load observations: ${e.response?.data?.detail || e.message || 'Unknown error'}`);
-      message.error('Failed to load observation data.');
-      setObservations([]);
+      toast.error('Ошибка загрузки наблюдений');
     } finally {
-      setIsLoadingObservations(false);
+      setIsLoadingNewObservations(false);
     }
-  }, [selectedSpeciesIds, dateRange, mapBounds, showObservations, speciesList]);
+  }, [selectedSpeciesIds, dateRange, mapBounds, showObservations, showHeatmap, speciesList, axiosInstance, observationCache]);
 
   const fetchHabitatAreas = useCallback(async () => {
-    if ((!showMCP && !showKDE) || selectedSpeciesIds.length === 0) {
-        setHabitatAreas([]);
-      return;
-    }
     setIsLoadingHabitats(true);
     setError(null);
+    setHabitatAreas([]);
 
-    const methodsToShow: Array<'MCP' | 'KDE'> = [];
-    if (showMCP) methodsToShow.push('MCP');
-    if (showKDE) methodsToShow.push('KDE');
-
-    const fetchPromises = selectedSpeciesIds.flatMap(speciesId =>
-        methodsToShow.map(method => {
-    const params = new URLSearchParams();
-            params.append('species_id', speciesId.toString());
-            params.append('method', method);
-            params.append('limit', '100'); // Limit results per species/method
-            return axiosInstance.get<HabitatAreaFeature[]>('/habitats/', { params });
-        })
-    );
+    if (selectedSpeciesIds.length === 0) {
+        setIsLoadingHabitats(false);
+        return;
+    }
 
     try {
-        const responses = await Promise.all(fetchPromises);
-        const allHabitats = responses.flatMap(response => {
-            const speciesId = parseInt(new URL(response.config.url || '', response.config.baseURL).searchParams.get('species_id') || '0');
-            const method = new URL(response.config.url || '', response.config.baseURL).searchParams.get('method') || '';
-            const species = speciesList.find(s => s.id === speciesId);
+        const responses = await Promise.all(
+            selectedSpeciesIds.map(speciesId => 
+                axiosInstance.get<HabitatAreaResponse[]>(`/habitats/?species_id=${speciesId}&limit=100`)
+            )
+        );
+
+        const allHabitats: HabitatAreaFeature[] = responses.flatMap((response) => {
             return response.data.map(habitat => ({
-                ...habitat,
                 type: 'Feature' as const,
-                // IMPORTANT: Assuming backend sends GeoJSON Polygon/MultiPolygon directly
-                geometry: (habitat as any).polygon, // Adapt based on actual backend response structure
+                geometry: habitat.polygon,
                 properties: {
-                    ...(habitat as any).properties,
-                    id: (habitat as any).id,
-                    species_id: speciesId,
-                    species_name: species?.name || `Species ${speciesId}`,
-                    method: method.toUpperCase() as 'MCP' | 'KDE',
-                    parameters: (habitat as any).parameters,
-                    calculated_at: (habitat as any).calculated_at,
-                    source_observation_count: (habitat as any).source_observation_count
+                    id: habitat.id,
+                    species_id: habitat.species_id,
+                    species_name: habitat.species.name,
+                    method: habitat.method.toUpperCase() as 'MCP' | 'KDE',
+                    parameters: habitat.parameters,
+                    calculated_at: habitat.calculated_at,
+                    source_observation_count: habitat.source_observation_count,
+                    user_id: habitat.user_id,
                 }
-            }));
+            })) as HabitatAreaFeature[];
         });
         setHabitatAreas(allHabitats);
+
     } catch (e: any) {
-      console.error('Failed to fetch habitat areas:', e);
-      setError(`Failed to load habitat areas: ${e.response?.data?.detail || e.message || 'Unknown error'}`);
-      message.error('Failed to load habitat area data.');
+      console.error('Failed to fetch saved habitat areas:', e);
+      setError(`Failed to load saved habitat areas: ${e.response?.data?.detail || e.message || 'Unknown error'}`);
+      toast.error('Ошибка загрузки сохраненных ареалов обитания');
       setHabitatAreas([]);
     } finally {
       setIsLoadingHabitats(false);
     }
-  }, [selectedSpeciesIds, showMCP, showKDE, speciesList]);
+  }, [selectedSpeciesIds, axiosInstance]);
 
-  // --- Initial Data Load ---
+  const fetchOverlapData = useCallback(async (species1Id: number, species2Id: number) => {
+    if (!species1Id || !species2Id) {
+      setOverlapData(null);
+      return;
+    }
+
+    setIsLoadingOverlap(true);
+    setError(null);
+
+    try {
+      const response = await axiosInstance.post<HabitatOverlap>(`/habitats/overlap/${species1Id}/${species2Id}`, {
+        method: 'kde'
+      });
+      setOverlapData(response.data);
+    } catch (e: any) {
+      console.error('Failed to fetch overlap data:', e);
+      setError(`Failed to load overlap data: ${e.response?.data?.detail || e.message || 'Unknown error'}`);
+      toast.error('Ошибка загрузки данных о перекрытии ареалов');
+      setOverlapData(null);
+    } finally {
+      setIsLoadingOverlap(false);
+    }
+  }, []);
+
+  const calculateAllOverlaps = useCallback((habitats: CalculatedHabitat[]) => {
+    const overlaps: Array<{
+      species1: CalculatedHabitat;
+      species2: CalculatedHabitat;
+      overlap: OverlapResult;
+    }> = [];
+
+    const kdeHabitats = habitats.filter(h => h.method === 'KDE');
+
+    for (let i = 0; i < kdeHabitats.length; i++) {
+      for (let j = i + 1; j < kdeHabitats.length; j++) {
+        try {
+          const intersectionResult = (window as any).turf.intersect(
+            kdeHabitats[i].geometry,
+            kdeHabitats[j].geometry
+          );
+          
+          if (intersectionResult) {
+            const overlapArea = (window as any).turf.area(intersectionResult) / 1000000;
+            const species1Area = (window as any).turf.area(kdeHabitats[i].geometry) / 1000000;
+            const species2Area = (window as any).turf.area(kdeHabitats[j].geometry) / 1000000;
+
+            const overlapPercentage1 = (overlapArea / species1Area) * 100;
+            const overlapPercentage2 = (overlapArea / species2Area) * 100;
+
+            overlaps.push({
+              species1: kdeHabitats[i],
+              species2: kdeHabitats[j],
+              overlap: {
+                overlap_area: overlapArea,
+                species1_area: species1Area,
+                species2_area: species2Area,
+                overlap_percentage: Math.max(overlapPercentage1, overlapPercentage2),
+                geometry: intersectionResult,
+                intensity_data: {
+                  points: [],
+                  max_intensity: 0
+                }
+              }
+            });
+          }
+        } catch (error) {
+          console.error('Error calculating overlap:', error);
+        }
+      }
+    }
+
+    setOverlapResults(overlaps);
+
+    if (overlaps.length > 0 && overlapWorkerRef.current) {
+      overlaps.forEach((overlap, index) => {
+        const species1Points = overlap.species1.parameters?.grid_points || [];
+        const species2Points = overlap.species2.parameters?.grid_points || [];
+        
+        overlapWorkerRef.current?.postMessage({
+          type: 'calculate',
+          species1Points,
+          species2Points,
+          intersectionGeometry: overlap.overlap.geometry
+        });
+        
+        setOverlapCalculationProgress((index + 1) / overlaps.length * 100);
+      });
+    } else {
+      setIsCalculatingOverlap(false);
+      setNeedsOverlapRecalculation(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (needsOverlapRecalculation && selectedSpeciesIds.length >= 2) {
+      setOverlapResults([]);
+      setIsCalculatingOverlap(true);
+      const kdeHabitats = calculatedHabitats.filter(h => h.method === 'KDE');
+      if (kdeHabitats.length >= 2) {
+        calculateAllOverlaps(kdeHabitats);
+      } else {
+        setIsCalculatingOverlap(false);
+        setNeedsOverlapRecalculation(false);
+      }
+    }
+  }, [calculatedHabitats, needsOverlapRecalculation, selectedSpeciesIds.length, calculateAllOverlaps]);
+
+  const calculateHabitatArea = async (method: 'MCP' | 'KDE') => {
+    if (selectedSpeciesIds.length === 0) {
+      toast.info('Пожалуйста, выберите хотя бы один вид для расчета ареала.');
+      return;
+    }
+    
+    setIsLoadingPreview(true);
+    setError(null);
+    setNeedsOverlapRecalculation(true);
+    setOverlapResults([]);
+
+    try {
+      const calculationPromises = selectedSpeciesIds.map(async (speciesId) => {
+        const speciesName = speciesList.find(s => s.id === speciesId)?.name || `Species ${speciesId}`;
+
+        let calcParams: Record<string, any> = {};
+        if (method === 'MCP') {
+          calcParams = { percentage: mcpInputParams.percentage };
+        } else if (method === 'KDE') {
+          const h_degrees = metersToDegrees(kdeInputParams.h_meters);
+          calcParams = { 
+            h_meters: h_degrees,
+            level_percent: kdeInputParams.level_percent,
+            grid_size: kdeInputParams.grid_size
+          };
+        }
+
+        const requestBody = {
+          parameters: calcParams,
+          filters: {
+            start_date: dateRange[0] ? new Date(dateRange[0]).toISOString() : undefined,
+            end_date: dateRange[1] ? new Date(dateRange[1]).toISOString() : undefined,
+          },
+        };
+
+        const response = await axiosInstance.post<HabitatAreaPreviewResponse>(
+          `/habitats/preview/${speciesId}/${method.toLowerCase()}`,
+          requestBody
+        );
+        
+        const data = response.data;
+        
+        if (data.polygon) {
+          if (method === 'KDE' && data.grid_points && data.grid_points.length > 0) {
+            setHeatmapDataReady(prev => ({
+              ...prev,
+              [speciesId]: true
+            }));
+          }
+
+          return {
+            id: Date.now() + speciesId,
+            species_id: speciesId,
+            species_name: speciesName,
+            method: method,
+            geometry: {
+              type: 'Feature',
+              geometry: data.polygon as Polygon | MultiPolygon,
+              properties: {}
+            },
+            parameters: {
+              ...calcParams,
+              grid_points: data.grid_points || [],
+              max_density: data.max_density || 1.0
+            },
+            calculated_at: new Date().toISOString(),
+            source_observation_count: data.source_observation_count,
+          } as CalculatedHabitat;
+        }
+        return null;
+      });
+
+      const results = await Promise.all(calculationPromises);
+      const validResults = results.filter((result): result is CalculatedHabitat => result !== null);
+
+      setCalculatedHabitats(prev => {
+        const filtered = prev.filter(h => 
+          !(selectedSpeciesIds.includes(h.species_id) && h.method === method)
+        );
+        return [...filtered, ...validResults];
+      });
+
+      if (validResults.length > 0) {
+        setNeedsOverlapRecalculation(true);
+        calculateAllOverlaps([...validResults]);
+      }
+
+      toast.success(`Расчет ${method} завершен для ${validResults.length} видов`);
+
+    } catch (e: any) {
+      const errorMsg = e.response?.data?.detail || e.message || 'Unknown error';
+      setError(`Failed to calculate areas: ${errorMsg}`);
+      toast.error(`Ошибка расчета: ${errorMsg}`);
+      setNeedsOverlapRecalculation(false);
+    } finally {
+      setIsLoadingPreview(false);
+    }
+  };
+
   useEffect(() => {
     fetchSpecies();
   }, [fetchSpecies]);
 
-  // --- Trigger Data Fetches on Filter Changes ---
   useEffect(() => {
     fetchObservations();
-  }, [fetchObservations]); // Re-fetch when filters or map bounds change
+  }, [fetchObservations]);
 
-  useEffect(() => {
-    fetchHabitatAreas();
-  }, [fetchHabitatAreas]); // Re-fetch when species or visibility changes
-
-  // --- Map Event Handlers ---
   const handleMapMoveEnd = useCallback(() => {
     const map = mapRef.current;
     if (map) {
-      setMapBounds(map.getBounds());
-      // Optionally update zoom/center state if needed elsewhere
-      // setMapZoom(map.getZoom());
-      // setMapCenter(map.getCenter());
-    }
-  }, []);
+      const newBounds = map.getBounds();
+      setMapBounds(newBounds);
+      
+      const needsNewData = !observationCache.some(cache => 
+        cache.bounds.contains(newBounds.getNorthEast()) && 
+        cache.bounds.contains(newBounds.getSouthWest())
+      );
 
-  // Effect to attach map events
+      if (needsNewData) {
+        fetchObservations();
+      }
+    }
+  }, [fetchObservations, observationCache]);
+
   useEffect(() => {
       const map = mapRef.current;
       if (map) {
           map.on('moveend', handleMapMoveEnd);
-          // Clean up listener on component unmount or when handler changes
+
+          const handleOverlayAdd = (event: LeafletEvent) => {
+              const layerName = (event as any).layer.options.name;
+              if (layerName === 'Наблюдения') setShowObservations(true);
+              if (layerName === 'MCP области') setShowMCP(true);
+              if (layerName === 'KDE контур') setShowKDE(true);
+              if (layerName === 'Тепловая карта') setShowHeatmap(true);
+          };
+
+          const handleOverlayRemove = (event: LeafletEvent) => {
+              const layerName = (event as any).layer.options.name;
+              if (layerName === 'Наблюдения') setShowObservations(false);
+              if (layerName === 'KDE контур') setShowKDE(false);
+              if (layerName === 'Тепловая карта') setShowHeatmap(false);
+              if (layerName === 'MCP области') setShowMCP(false);
+          };
+
+          setShowObservations(true);
+          setShowMCP(true);
+          setShowKDE(true);
+          setShowHeatmap(false);
+
+          map.on('overlayadd', handleOverlayAdd);
+          map.on('overlayremove', handleOverlayRemove);
+
           return () => {
               map.off('moveend', handleMapMoveEnd);
+              map.off('overlayadd', handleOverlayAdd);
+              map.off('overlayremove', handleOverlayRemove);
           };
       }
-  }, [handleMapMoveEnd]); // Rerun if handler changes
+  }, [handleMapMoveEnd]);
 
-  // --- UI Event Handlers ---
-
-  const handleSpeciesChange = (selectedIds: number[]) => {
+  const handleSpeciesChange = async (selectedIds: number[]) => {
     setSelectedSpeciesIds(selectedIds);
+    setCalculatedKDE(null);
+    setCalculatedMCP(null);
+    setHeatmapPoints([]);
+    setMaxDensity(null);
+    setOverlapData(null);
+    setCalculatedHabitats([]);
+    setOverlapResults([]);
+    setOverlapResult(null);
+    setHeatmapDataReady({});
+    setObservationCache([]);
+    setNeedsOverlapRecalculation(true);
+    fetchObservations(true);
   };
 
-  const handleDateChange = (dates: any, dateStrings: [string, string]) => {
+  const handleDateChange = async (dates: any, dateStrings: [string, string]) => {
     setDateRange(dateStrings);
+    setCalculatedKDE(null);
+    setCalculatedMCP(null);
+    setHeatmapPoints([]);
+    setMaxDensity(null);
+    setOverlapData(null);
+    setObservationCache([]);
+    fetchObservations(true);
   };
 
-  const handleShowObservationsChange = (e: CheckboxChangeEvent) => {
-    setShowObservations(e.target.checked);
+  const handleMcpParamsChange = (value: number | null) => {
+    if (value !== null) {
+      setMcpInputParams({ percentage: value });
+    }
   };
 
-  const handleShowMCPChange = (e: CheckboxChangeEvent) => {
-    setShowMCP(e.target.checked);
+  const handleKdeParamsChange = (field: 'h_meters' | 'level_percent' | 'grid_size', value: number | null) => {
+    if (value !== null) {
+      setKdeInputParams(prev => ({
+        ...prev,
+        [field]: value
+      }));
+    }
   };
 
-  const handleShowKDEChange = (e: CheckboxChangeEvent) => {
-    setShowKDE(e.target.checked);
-  };
+  const isOverallLoading = isLoadingSpecies || isLoadingObservations || isLoadingHabitats || isLoadingOverlap || isLoadingPreview;
 
-  // --- GeoJSON Styling ---
   const getHabitatStyle = (feature?: MapFeature): L.PathOptions => {
     if (!feature || !feature.properties || !(feature as HabitatAreaFeature).properties.species_name) {
-        return { color: '#888888', weight: 2, opacity: 0.6, fillOpacity: 0.1 }; // Default style
+        return { color: '#888888', weight: 2, opacity: 0.6, fillOpacity: 0.1 };
     }
     const props = (feature as HabitatAreaFeature).properties;
     const color = stringToColor(props.species_name || 'default');
 
     return {
       color: color,
-      weight: props.method === 'KDE' ? 2 : 3, // Thicker line for MCP
+      weight: props.method === 'KDE' ? 2 : 3,
       opacity: 0.8,
       fillColor: color,
-      fillOpacity: props.method === 'KDE' ? 0.2 : 0.1, // Slightly more fill for KDE
-      dashArray: props.method === 'KDE' ? '5, 5' : undefined, // Dashed line for KDE
+      fillOpacity: props.method === 'KDE' ? 0.2 : 0.1,
+      dashArray: props.method === 'KDE' ? '5, 5' : undefined,
     };
   };
 
@@ -334,204 +686,364 @@ function GeoDataMapPage(): JSX.Element {
     }
   };
 
-  // Combine observations and habitats into one GeoJSON object for rendering
-  const combinedGeoJsonData: FeatureCollection<Point | Polygon | MultiPolygon, any> = {
-    type: 'FeatureCollection',
-    features: [...observations, ...habitatAreas] as Feature<Point | Polygon | MultiPolygon, any>[],
+  const getOverlapStyle = (): L.PathOptions => {
+    return {
+      color: '#FF4500',
+      weight: 2,
+      opacity: 0.7,
+      fillColor: '#FF4500',
+      fillOpacity: 0.3
+    };
   };
 
-  // Filter GeoJSON features based on visibility toggles before passing to GeoJSON component
-  const filteredFeatures = combinedGeoJsonData.features.filter(feature => {
-      if (feature.geometry.type === 'Point') {
-          return showObservations;
-      } else if (feature.geometry.type === 'Polygon' || feature.geometry.type === 'MultiPolygon') {
-          const props = (feature as HabitatAreaFeature).properties;
-          return (props.method === 'MCP' && showMCP) || (props.method === 'KDE' && showKDE);
-      }
-      return false;
-  });
+  const getMCPStyle = (): L.PathOptions => {
+    return {
+      color: '#FF0000',
+      weight: 3,
+      opacity: 0.9,
+      fillColor: '#FF0000',
+      fillOpacity: 0.2,
+      dashArray: '5, 5'
+    };
+  };
 
-  const filteredGeoJson: FeatureCollection<Point | Polygon | MultiPolygon, any> = {
-      type: 'FeatureCollection',
-      features: filteredFeatures
-  }
+  const getKDEStyle = (): L.PathOptions => {
+    return {
+      color: '#0000FF',
+      weight: 2,
+      opacity: 0.8,
+      fillColor: '#0000FF',
+      fillOpacity: 0.15,
+      dashArray: '7, 7'
+    };
+  };
 
+  const renderMCPLayer = () => {
+    if (!showMCP || !calculatedMCP) return null;
+    
+    return (
+      <GeoJSON
+        key={`mcp-layer-${calculatedMCP.properties.parameters.percentage}`}
+        data={{
+          type: 'FeatureCollection',
+          features: [calculatedMCP]
+        } as FeatureCollection}
+        style={getMCPStyle}
+        onEachFeature={onEachHabitatFeature}
+      />
+    );
+  };
 
-  // --- Render ---
+  const renderKDELayer = () => {
+    if (!showKDE || !calculatedKDE) return null;
+    
+    return (
+      <GeoJSON
+        key={`kde-layer-${calculatedKDE.properties.parameters.h_meters}-${calculatedKDE.properties.parameters.level_percent}-${calculatedKDE.properties.parameters.grid_size}`}
+        data={{
+          type: 'FeatureCollection',
+          features: [calculatedKDE]
+        } as FeatureCollection}
+        style={getKDEStyle}
+        onEachFeature={onEachHabitatFeature}
+      />
+    );
+  };
 
-  const isLoading = isLoadingSpecies || isLoadingObservations || isLoadingHabitats;
+  const renderHabitatLayers = () => {
+    return calculatedHabitats.map(habitat => (
+      <GeoJSON
+        key={`${habitat.method}-${habitat.species_id}-${habitat.id}`}
+        data={{
+          type: 'FeatureCollection',
+          features: [habitat.geometry]
+        } as FeatureCollection}
+        style={() => ({
+          color: stringToColor(habitat.species_name),
+          weight: habitat.method === 'KDE' ? 2 : 3,
+          opacity: 0.8,
+          fillColor: stringToColor(habitat.species_name),
+          fillOpacity: habitat.method === 'KDE' ? 0.2 : 0.1,
+          dashArray: habitat.method === 'KDE' ? '5, 5' : undefined,
+        })}
+        onEachFeature={(feature, layer) => {
+          layer.bindPopup(`
+            <div>
+              <strong>${habitat.species_name} (${habitat.method})</strong><br/>
+              Площадь: ${((window as any).turf.area(habitat.geometry) / 1000000).toFixed(2)} км²<br/>
+              Количество точек: ${habitat.source_observation_count}<br/>
+              Дата расчета: ${new Date(habitat.calculated_at).toLocaleString()}
+            </div>
+          `);
+        }}
+      />
+    ));
+  };
 
-  return (
-    <div style={styles.pageContainer}>
-      <Row gutter={[16, 16]}>
-        {/* Controls Column */}
-        <Col xs={24} md={8} lg={6} style={styles.controlsColumn}>
-          <Card title="Map Controls" bordered={false}>
-            {error && (
-              <Alert
-                message="Error"
-                description={error}
-                type="error"
-                showIcon
-                closable
-                onClose={() => setError(null)}
-                style={{ marginBottom: '16px' }}
+  const renderOverlapLayers = () => {
+    return (
+      <>
+        {overlapResults.map((result, index) => (
+          <React.Fragment key={`overlap-${index}`}>
+            <GeoJSON
+              data={result.overlap.geometry}
+              style={() => ({
+                color: '#FF4500',
+                weight: 2,
+                opacity: 0.7,
+                fillColor: '#FF4500',
+                fillOpacity: 0.3
+              })}
+              onEachFeature={(feature, layer) => {
+                layer.bindPopup(`
+                  <div>
+                    <strong>Пересечение ареалов</strong><br/>
+                    ${result.species1.species_name} и ${result.species2.species_name}<br/>
+                    Площадь пересечения: ${result.overlap.overlap_area.toFixed(2)} км²<br/>
+                    Процент пересечения: ${result.overlap.overlap_percentage.toFixed(2)}%
+                  </div>
+                `);
+              }}
+            />
+            
+            {!isCalculatingOverlap && result.overlap.intensity_data && result.overlap.intensity_data.points.length > 0 && (
+              <HeatmapLayer
+                key={`overlap-heatmap-${index}-${result.overlap.intensity_data.max_intensity}`}
+                points={result.overlap.intensity_data.points.map(point => 
+                  [point.lat, point.lng, point.intensity] as [number, number, number]
+                )}
+                longitudeExtractor={(m: [number, number, number]) => m[1]}
+                latitudeExtractor={(m: [number, number, number]) => m[0]}
+                intensityExtractor={(m: [number, number, number]) => m[2]}
+                radius={25}
+                max={result.overlap.intensity_data.max_intensity}
+                blur={15}
+                maxZoom={10}
+                gradient={{
+                  0.4: 'blue',
+                  0.6: 'lime',
+                  0.8: 'yellow',
+                  1.0: 'red'
+                }}
               />
             )}
+          </React.Fragment>
+        ))}
+        
+        {isCalculatingOverlap && (
+          <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-white/90 p-5 rounded-lg shadow-md z-50">
+            <Spin tip={`Расчет интенсивности пересечения: ${Math.round(overlapCalculationProgress)}%`} />
+          </div>
+        )}
+      </>
+    );
+  };
 
-            <Spin spinning={isLoading}>
-        <div style={styles.controlGroup}>
-                <label htmlFor="species-select">Species:</label>
-                <Select
-                  id="species-select"
-                  mode="multiple"
-                  allowClear
-                  style={{ width: '100%' }}
-                  placeholder="Select species to display"
-                  value={selectedSpeciesIds}
-                  onChange={handleSpeciesChange}
-                  loading={isLoadingSpecies}
-                  maxTagCount="responsive"
-                >
-                  {speciesList.map((s) => (
-                    <Select.Option key={s.id} value={s.id}>
-                      {s.name}
-                    </Select.Option>
-                  ))}
-                </Select>
-        </div>
+  const renderSpeciesLayers = () => {
+    return selectedSpeciesIds.map(speciesId => {
+      const species = speciesList.find(s => s.id === speciesId);
+      if (!species) return null;
 
-        <div style={styles.controlGroup}>
-                <label htmlFor="date-range-picker">Observation Date Range:</label>
-                <RangePicker
-                  id="date-range-picker"
-                  style={{ width: '100%' }}
-                  onChange={handleDateChange}
-                  // value={dateRange} // Need to convert string[] to Dayjs[] if using controlled component
+      const speciesHabitats = calculatedHabitats.filter(h => h.species_id === speciesId);
+      const mcpHabitat = speciesHabitats.find(h => h.method === 'MCP');
+      const kdeHabitat = speciesHabitats.find(h => h.method === 'KDE');
+
+      const kdeGridPoints: GridPoint[] = kdeHabitat?.parameters?.grid_points || [];
+      const maxDensity = kdeHabitat?.parameters?.max_density || 1.0;
+      const isHeatmapReady = heatmapDataReady[speciesId] && kdeGridPoints.length > 0;
+
+      return (
+        <React.Fragment key={`species-${speciesId}`}>
+          <LayersControl.Overlay 
+            key={`mcp-${speciesId}`}
+            name={`${species.name} - MCP`}
+            checked={true}
+          >
+            <FeatureGroup>
+              {mcpHabitat && (
+                <GeoJSON
+                  key={`mcp-${speciesId}-${mcpHabitat.id}`}
+                  data={{
+                    type: 'FeatureCollection',
+                    features: [mcpHabitat.geometry]
+                  } as FeatureCollection}
+                  style={() => ({
+                    color: stringToColor(species.name),
+                    weight: 3,
+                    opacity: 0.8,
+                    fillColor: stringToColor(species.name),
+                    fillOpacity: 0.1
+                  })}
+                  onEachFeature={(feature, layer) => {
+                    layer.bindPopup(`
+                      <div>
+                        <strong>${species.name} (MCP)</strong><br/>
+                        Площадь: ${((window as any).turf.area(mcpHabitat.geometry) / 1000000).toFixed(2)} км²<br/>
+                        Количество точек: ${mcpHabitat.source_observation_count}<br/>
+                        Дата расчета: ${new Date(mcpHabitat.calculated_at).toLocaleString()}
+                      </div>
+                    `);
+                  }}
+                />
+              )}
+            </FeatureGroup>
+          </LayersControl.Overlay>
+
+          <LayersControl.Overlay 
+            key={`kde-${speciesId}`}
+            name={`${species.name} - KDE`}
+            checked={true}
+          >
+            <FeatureGroup>
+              {kdeHabitat && (
+                <GeoJSON
+                  key={`kde-${speciesId}-${kdeHabitat.id}`}
+                  data={{
+                    type: 'FeatureCollection',
+                    features: [kdeHabitat.geometry]
+                  } as FeatureCollection}
+                  style={() => ({
+                    color: stringToColor(species.name),
+                    weight: 2,
+                    opacity: 0.8,
+                    fillColor: stringToColor(species.name),
+                    fillOpacity: 0.2,
+                    dashArray: '5, 5'
+                  })}
+                  onEachFeature={(feature, layer) => {
+                    layer.bindPopup(`
+                      <div>
+                        <strong>${species.name} (KDE)</strong><br/>
+                        Площадь: ${((window as any).turf.area(kdeHabitat.geometry) / 1000000).toFixed(2)} км²<br/>
+                        Количество точек: ${kdeHabitat.source_observation_count}<br/>
+                        Дата расчета: ${new Date(kdeHabitat.calculated_at).toLocaleString()}
+                      </div>
+                    `);
+                  }}
+                />
+              )}
+            </FeatureGroup>
+          </LayersControl.Overlay>
+
+          <LayersControl.Overlay 
+            key={`heatmap-${speciesId}`}
+            name={`${species.name} - Тепловая карта`}
+            checked={false}
+          >
+            <FeatureGroup>
+              {isHeatmapReady && kdeGridPoints.length > 0 && (
+                <HeatmapLayer
+                  key={`heatmap-${speciesId}-${kdeHabitat?.id}`}
+                  points={kdeGridPoints.map((point: GridPoint) => [point.lat, point.lng, point.density] as [number, number, number])}
+                  longitudeExtractor={(m: [number, number, number]) => m[1]}
+                  latitudeExtractor={(m: [number, number, number]) => m[0]}
+                  intensityExtractor={(m: [number, number, number]) => m[2]}
+                  radius={25}
+                  max={maxDensity}
+                  blur={15}
+                  maxZoom={10}
+                  gradient={{
+                    0.4: 'blue',
+                    0.6: 'lime',
+                    0.8: 'yellow',
+                    1.0: 'red'
+                  }}
+                />
+              )}
+            </FeatureGroup>
+          </LayersControl.Overlay>
+        </React.Fragment>
+      );
+    });
+  };
+
+  return (
+    <div className="container mx-auto p-4 space-y-8">
+      <style>{globalStyles}</style>
+      <Toaster richColors />
+      
+      <h1 className="text-3xl font-bold mb-6">Карта ареалов обитания</h1>
+      
+      <Row gutter={[16, 16]}>
+        <Col xs={24} md={8} lg={6} style={styles.controlsColumn}>
+          <MapControls
+            speciesList={speciesList}
+            selectedSpeciesIds={selectedSpeciesIds}
+            onSpeciesChange={handleSpeciesChange}
+            loadingSpecies={isLoadingSpecies}
+            dateRange={dateRange}
+            onDateRangeChange={handleDateChange}
+            mcpInputParams={mcpInputParams}
+            kdeInputParams={kdeInputParams}
+            onMcpParamsChange={handleMcpParamsChange}
+            onKdeParamsChange={handleKdeParamsChange}
+            onCalculateHabitat={calculateHabitatArea}
+            isLoadingPreview={isLoadingPreview}
+            isOverallLoading={isOverallLoading}
           />
-        </div>
-
-        <div style={styles.controlGroup}>
-                <label>Show Layers:</label>
-                <div>
-                  <Checkbox checked={showObservations} onChange={handleShowObservationsChange}>Observations</Checkbox>
-                </div>
-                <div>
-                  <Checkbox checked={showMCP} onChange={handleShowMCPChange}>MCP Areas</Checkbox>
-        </div>
-                <div>
-                  <Checkbox checked={showKDE} onChange={handleShowKDEChange}>KDE Areas</Checkbox>
-        </div>
-      </div>
-
-              {/* Optionally add a manual refresh button */}
-              {/* <Button onClick={() => { fetchObservations(); fetchHabitatAreas(); }} loading={isLoadingObservations || isLoadingHabitats}>Refresh Data</Button> */}
-            </Spin>
-          </Card>
         </Col>
 
-        {/* Map Column */}
         <Col xs={24} md={16} lg={18}>
-        <MapContainer 
-          center={mapCenter} 
-          zoom={mapZoom} 
+          <MapContainer 
+            center={mapCenter} 
+            zoom={mapZoom} 
             style={styles.mapContainer}
-            // Access map instance via ref inside the callback if needed after ready
             whenReady={() => { 
               if (mapRef.current) {
-                  setMapBounds(mapRef.current.getBounds()); 
+                setMapBounds(mapRef.current.getBounds()); 
               } 
             }} 
-            ref={mapRef} // Ensure ref is assigned
-            // onMoveEnd={handleMapMoveEnd} // Removed prop
-        >
-          <TileLayer
-              attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-          />
+            ref={mapRef}
+            attributionControl={false}
+          >
+            <TileLayer
+              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+            />
 
-            {/* Render Observations using MarkerClusterGroup */}
-            {showObservations && observations.length > 0 && (
-          <MarkerClusterGroup>
-                {observations.map((obs) => (
-            <Marker
-                    key={`obs-${obs.properties.id}`}
-                    position={[obs.geometry.coordinates[1], obs.geometry.coordinates[0]]} // Lat, Lon for Leaflet Marker
-            >
-              <Popup>
-                      <strong>Observation {obs.properties.id}</strong><br/>
-                      Species: {obs.properties.species_name || 'N/A'} (ID: {obs.properties.species_id})<br/>
-                      Date: {new Date(obs.properties.timestamp).toLocaleString()}<br/>
-                      Source: {obs.properties.source || 'N/A'}<br/>
-                      {obs.properties.image_url && <a href={obs.properties.image_url} target="_blank" rel="noopener noreferrer">View Image</a>}
-              </Popup>
-            </Marker>
-                ))}
-              </MarkerClusterGroup>
-            )}
+            <ScaleControl position="bottomleft" />
 
-            {/* Render Habitat Areas using GeoJSON Layer */}
-            {(showMCP || showKDE) && habitatAreas.length > 0 && (
-                // Filter habitat areas based on current visibility toggles
-                <GeoJSON
-                    key={JSON.stringify(selectedSpeciesIds) + showMCP + showKDE} // Force re-render on filter change
-                    data={{
-                        type: 'FeatureCollection',
-                        features: habitatAreas.filter(feature =>
-                            (feature.properties.method === 'MCP' && showMCP) || (feature.properties.method === 'KDE' && showKDE)
-                        )
-                    } as FeatureCollection} // Ensure data is a FeatureCollection
-                    style={getHabitatStyle as L.StyleFunction<HabitatAreaFeature>} // Cast style function type
-                    onEachFeature={onEachHabitatFeature as L.GeoJSONOptions['onEachFeature']}
-                />
-            )}
+            <LayersControl position="bottomright">
+              <LayersControl.Overlay 
+                name="Наблюдения" 
+                checked={showObservations} 
+              >
+                <FeatureGroup>
+                  <ObservationsLayer observations={observations} show={showObservations} />
+                </FeatureGroup>
+              </LayersControl.Overlay>
 
-        </MapContainer>
+              {renderSpeciesLayers()}
+
+              <LayersControl.Overlay name="Пересечения" checked={true}>
+                <FeatureGroup>
+                  {renderOverlapLayers()}
+                </FeatureGroup>
+              </LayersControl.Overlay>
+            </LayersControl>
+          </MapContainer>
         </Col>
       </Row>
     </div>
   );
 }
 
-// --- Styles ---
 const styles: { [key: string]: CSSProperties } = {
-  pageContainer: {
-    display: 'flex',
-    flexDirection: 'column',
-    height: 'calc(100vh - 64px)', // Adjust if you have a header/navbar of different height
-    padding: '16px',
+  mapContainer: {
+    height: 'calc(100vh - 64px - 32px)',
+    width: '100%',
   },
   controlsColumn: {
-    height: 'calc(100vh - 64px - 32px)', // Full height minus padding
-    overflowY: 'auto',
-    backgroundColor: '#f0f2f5', // Light background for controls
+    height: 'calc(100vh - 64px - 32px)',
+    overflowY: 'auto' as const,
+    backgroundColor: '#f0f2f5',
     padding: '10px'
-  },
-  mapContainer: {
-    height: 'calc(100vh - 64px - 32px)', // Full height minus padding
-    width: '100%',
-  },
-  controlGroup: {
-    marginBottom: '16px',
-  },
-  select: {
-    width: '100%',
-    padding: '8px',
-    marginBottom: '10px',
-  },
-  dateInput: {
-    width: 'calc(50% - 5px)',
-    padding: '8px',
-  },
-  button: {
-    padding: '10px 15px',
-    cursor: 'pointer',
-  },
-  clearButton: {
-    marginLeft: '10px',
-    backgroundColor: '#ffc107',
-    border: 'none',
-  },
+  }
 };
+
+const globalStyles = `
+  .leaflet-control-attribution {
+    display: none !important;
+  }
+`;
 
 export default GeoDataMapPage;

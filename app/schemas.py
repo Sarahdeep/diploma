@@ -1,8 +1,10 @@
-from pydantic import BaseModel, EmailStr, Field, computed_field
-from typing import List, Optional, Dict, Any
+import models
+from pydantic import BaseModel, EmailStr, Field, model_validator
+from typing import List, Optional, Dict, Any, Union
 from datetime import datetime
 from geoalchemy2.elements import WKBElement
 from geoalchemy2.shape import to_shape
+from geojson_pydantic import Point, Polygon, MultiPolygon
 
 # --- Base Schemas ---
 
@@ -25,96 +27,86 @@ class ObservationDeleteByAreaRequest(BaseModel):
 # --- Species Schemas (Renamed from AnimalClass) ---
 
 class SpeciesBase(BaseModel):
-    name: str
+    name: str = Field(..., min_length=1, max_length=100)
     description: Optional[str] = None
 
 class SpeciesCreate(SpeciesBase):
     pass
 
-class Species(SpeciesBase): # Renamed from AnimalClass (used for reading)
+class SpeciesRead(SpeciesBase):
     id: int
 
     class Config:
-        from_attributes = True # Changed from orm_mode = True
+        from_attributes = True
 
+# --- Observation Filter Schemas (Moved Up) ---
+class ObservationFilterParams(BaseModel):
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
+    # If you add other filters like min_lat, max_lat, here, ensure the endpoint
+    # /observations/ uses them from this model or continues to use direct query params.
 
 # --- Observation Schemas (Replaces GeoData) ---
 
 class ObservationBase(BaseModel):
     timestamp: datetime
-    source: str = 'unknown'
-    image_metadata: Optional[Dict[str, Any]] = None
-    classification_confidence: Optional[float] = None
-    image_url: Optional[str] = None # URL from MinIO
+    latitude: float = Field(..., ge=-90, le=90)
+    longitude: float = Field(..., ge=-180, le=180)
+    image_url: Optional[str] = None
+    source: Optional[str] = None
+    classification_confidence: Optional[float] = Field(None, ge=0, le=1)
 
 class ObservationCreate(ObservationBase):
-    latitude: float
-    longitude: float
     species_id: int
-    # user_id will be set based on authenticated user
-
-class ObservationUpdate(BaseModel):
-    species_id: Optional[int] = None
-    timestamp: Optional[datetime] = None
-    latitude: Optional[float] = None # For updating location
-    longitude: Optional[float] = None # For updating location
-    # Potentially add other fields like source, image_metadata if they should be updatable
-    # image_url update is complex, usually involves re-upload. Not included for now.
-    classification_confidence: Optional[float] = None
 
 class ObservationRead(ObservationBase):
     id: int
     species_id: int
     user_id: Optional[int] = None
-    created_at: datetime
-    species: Species # Include species info
+    location: Point # This is the field for the GeoJSON Point output, using your custom Point or geojson_pydantic.Point if custom is removed
+    image_metadata: Optional[Dict[str, Any]] = None
+    species: Optional[SpeciesRead] = None
 
-    # This field holds the raw WKBElement from the ORM.
-    # It's populated from the SQLAlchemy model's 'location' attribute via alias.
-    # It is NOT included in the output JSON due to exclude=True.
-    location_orm_wkb: Optional[WKBElement] = Field(alias='location', default=None, exclude=True)
+    @model_validator(mode='before')
+    @classmethod
+    def _prepare_from_orm(cls, data: Any) -> Any:
+        if isinstance(data, models.Observation): # data is the ORM instance
+            orm_instance = data
+            output_data = {}
 
-    @computed_field(description="GeoJSON Point structure for output")
-    @property
-    def location(self) -> Optional[Point]:
-        raw_location_value = self.location_orm_wkb # Use the renamed, aliased field
+            # Populate fields that can be directly mapped or are part of the ORM instance
+            # These are fields expected by ObservationRead or its base ObservationBase
+            direct_mapping_fields = [
+                'id', 'species_id', 'user_id', 'timestamp', 'image_url', 
+                'source', 'classification_confidence', 'image_metadata'
+            ]
+            for field_name in direct_mapping_fields:
+                if hasattr(orm_instance, field_name):
+                    output_data[field_name] = getattr(orm_instance, field_name)
+            
+            # Handle nested 'species' relationship
+            if hasattr(orm_instance, 'species') and orm_instance.species is not None:
+                output_data['species'] = orm_instance.species # Pydantic will convert to SpeciesRead
 
-        if raw_location_value is None:
-            return None
-
-        if isinstance(raw_location_value, WKBElement):
-            try:
-                shapely_point = to_shape(raw_location_value)
-                return Point(coordinates=[shapely_point.x, shapely_point.y])
-            except Exception as e:
-                # Log error during conversion if necessary
-                # print(f"Error converting WKBElement to Point: {e}")
-                return None # Or raise, depending on how strict we want to be
-        elif isinstance(raw_location_value, dict) and 'coordinates' in raw_location_value:
-            return Point(**raw_location_value)
-        elif isinstance(raw_location_value, Point):
-            return raw_location_value
-        
-        # If it's not None and not any of the expected types, it's an issue.
-        # print(f"Warning: location_orm_wkb had unexpected type: {type(raw_location_value)}")
-        return None # Fallback for unexpected types after None check
+            # Transform WKBElement 'location' from ORM instance
+            if hasattr(orm_instance, 'location') and isinstance(orm_instance.location, WKBElement):
+                shape = to_shape(orm_instance.location) # Converts WKBElement to a Shapely Point
+                output_data['latitude'] = shape.y
+                output_data['longitude'] = shape.x
+                # Use the 'Point' type available in this scope (your custom Point or imported geojson_pydantic.Point)
+                output_data['location'] = Point(type="Point", coordinates=[shape.x, shape.y])
+            
+            return output_data
+        return data # Pass through if not an ORM Observation instance
 
     class Config:
         from_attributes = True
-        populate_by_name = True # To allow alias 'location' to populate 'location_orm_wkb'
-        arbitrary_types_allowed = True # Allow WKBElement type
-
-class ObservationFilterParams(BaseModel):
-    species_id: Optional[int] = None
-    start_date: Optional[str] = None
-    end_date: Optional[str] = None
-    min_lat: Optional[float] = None
-    min_lon: Optional[float] = None
-    max_lat: Optional[float] = None
-    max_lon: Optional[float] = None
-    min_confidence: Optional[float] = None
 
 # --- HabitatArea Schemas (New) ---
+
+class HabitatAreaCalculationRequest(BaseModel):
+    parameters: Dict[str, Any] = Field(default_factory=dict)
+    filters: Optional[ObservationFilterParams] = None
 
 class HabitatAreaBase(BaseModel):
     method: str
@@ -126,17 +118,30 @@ class HabitatAreaRead(HabitatAreaBase):
     species_id: int
     polygon: Polygon # GeoJSON Polygon structure for output
     calculated_at: datetime
-    species: Species # Include species info
+    species: Optional[SpeciesRead] = None # Include species info
+    user_id: Optional[int] = None # Если добавили user_id в модель
 
     class Config:
         from_attributes = True
 
-class HabitatAreaCalculationRequest(BaseModel):
-    # Parameters specific to the calculation method (MCP/KDE)
-    parameters: Dict[str, Any] = Field(..., example={"percentage": 95}) # Example for MCP
-    # Optional filters for selecting observations for calculation
-    filters: Optional[ObservationFilterParams] = None
+# --- Grid Point Schema ---
+class GridPoint(BaseModel):
+    lat: float
+    lng: float
+    density: float
 
+# Новая схема для ответа preview
+class HabitatAreaPreviewResponse(BaseModel):
+    method: str
+    parameters: Optional[Dict[str, Any]] = None
+    source_observation_count: int
+    polygon: Optional[Union[Polygon, MultiPolygon]] = None
+    species_id: int
+    grid_points: Optional[List[GridPoint]] = None
+    max_density: Optional[float] = None
+
+    class Config:
+        from_attributes = True
 
 # --- User Schemas --- (Adjusted)
 
@@ -146,14 +151,13 @@ class UserBase(BaseModel):
 class UserCreate(UserBase):
     password: str
 
-class User(UserBase): # Renamed from User (used for reading)
+class UserRead(UserBase):
     id: int
-    # Removed datasets relationship
-    # observations: List[ObservationRead] = [] # Uncomment if adding relationship back
+    is_active: bool
+    is_superuser: bool
 
     class Config:
         from_attributes = True
-
 
 # --- Auth Schemas --- (Keep as is unless auth logic changes)
 
@@ -162,7 +166,7 @@ class Token(BaseModel):
     token_type: str
 
 class TokenData(BaseModel):
-    email: Optional[str] = None
+    username: Optional[str] = None
 
 # Removed Dataset schemas
 # Removed Image schemas
@@ -183,3 +187,12 @@ class StandardResponseMessage(BaseModel):
 class ObservationListResponse(BaseModel):
     observations: List[ObservationRead]
     total_count: int
+
+class HabitatOverlapResult(BaseModel):
+    """Schema for habitat overlap calculation results."""
+    intersection_area: float = Field(..., description="Area of intersection between two habitat areas in square kilometers")
+    union_area: float = Field(..., description="Area of union between two habitat areas in square kilometers")
+    overlap_index: float = Field(..., description="Ratio of intersection area to union area (0-1)")
+
+    class Config:
+        from_attributes = True
