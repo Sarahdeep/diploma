@@ -3,7 +3,7 @@ import { Outlet, useNavigate } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
 
 // Define the type for the allowed sections
-type Section = 'upload' | 'species' | 'analysis' | 'map';
+type Section = 'upload' | 'observations' | 'analysis' | 'map';
 
 const MainLayout: React.FC = () => {
     const navigate = useNavigate();
@@ -13,7 +13,7 @@ const MainLayout: React.FC = () => {
     // Map section keys to routes
     const sectionRoutes: Record<Section, string> = {
         upload: "/admin", // Assuming /admin corresponds to 'upload'
-        species: "/species", // Define route for 'species'
+        observations: "/observations", // New route for observations
         analysis: "/analysis", // Define route for 'analysis'
         map: "/geodata-map", // Assuming /geodata-map corresponds to 'map'
     };

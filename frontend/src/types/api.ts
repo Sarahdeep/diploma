@@ -18,21 +18,51 @@ export interface User {
 
 export interface UserCreate {
   email: string;
+  username: string;
   password: string;
-  is_active?: boolean;
-  is_admin?: boolean;
+  role?: UserRole; // Optional, backend might default it
 }
 
 export interface UserUpdate {
   email?: string;
-  password?: string;
+  username?: string;
+  password?: string; // For password changes
+  role?: UserRole;
+  avatar_url?: string | null;
   is_active?: boolean;
-  is_admin?: boolean;
+  is_verified?: boolean;
+  // profile updates would likely be separate or nested
 }
+
+export interface UserProfileData { // Renamed from UserProfile to avoid conflict if there's a component named UserProfile
+    bio?: string | null;
+    location?: string | null;
+    website?: string | null;
+    social_links?: Record<string, string> | null; // Assuming JSON string keys
+    preferences?: Record<string, any> | null;
+    notification_settings?: Record<string, any> | null;
+}
+
+export interface UserRead {
+    id: number;
+    email: string;
+    username: string;
+    role: UserRole;
+    avatar_url?: string | null;
+    is_active: boolean;
+    is_verified: boolean;
+    created_at: string; // ISO datetime string
+    updated_at: string; // ISO datetime string
+    last_login?: string | null; // ISO datetime string
+    profile?: UserProfileData | null; // Nested profile data
+}
+
+export interface UserProfileUpdate extends UserProfileData {}
 
 // --- Auth Schemas ---
 export interface Token {
   access_token: string;
+  refresh_token?: string; // Added refresh_token
   token_type: string;
 }
 
@@ -131,4 +161,65 @@ export interface HabitatAreaRead extends HabitatAreaBase {
 export interface HabitatAreaCalculationRequest {
   parameters: Record<string, any>;
   filters?: ObservationFilterParams;
+}
+
+// Added for habitat preview endpoint
+export interface HabitatAreaPreviewResponse {
+  method: string;
+  parameters?: Record<string, any> | null;
+  source_observation_count: number;
+  polygon?: Polygon | MultiPolygon | null;
+  species_id: number; // Though not directly used in GeoDataMapPage from response, good to have
+  grid_points?: Array<{ lat: number; lng: number; density: number }> | null; // from types/map GridPoint
+  max_density?: number | null;
+}
+
+// Added for habitat overlap endpoint
+export interface HabitatOverlapResponse { // Renamed to avoid conflict if a component uses HabitatOverlap
+  species1_id: number;
+  species2_id: number;
+  overlap_area: number;
+  species1_area: number;
+  species2_area: number;
+  overlap_percentage: number;
+  geometry?: Feature<Polygon | MultiPolygon>; // GeoJSON Feature for the overlap area
+  // Potentially add intensity_data if backend provides it directly for overlap
+}
+
+// --- User Activity Schemas ---
+export interface UserActivityRead {
+    id: number;
+    user_id: number;
+    activity_type: string;
+    activity_data?: Record<string, any> | null;
+    ip_address?: string | null;
+    user_agent?: string | null;
+    created_at: string; // ISO datetime string
+    user?: UserRead; // Optional: include user details if backend provides
+}
+
+// --- Admin Schemas ---
+export interface AdminStatistics {
+    total_users: number;
+    active_users: number;
+    verified_users: number;
+    admin_users: number;
+    total_activities: number;
+    total_observations: number;
+    total_species: number;
+    activity_by_type: Record<string, number>;
+    recent_activities: UserActivityRead[];
+}
+
+// --- User Role Schemas ---
+export enum UserRole {
+    ADMIN = "admin",
+    USER = "user",
+}
+
+// Generic Message Response
+export interface StandardResponseMessage {
+  message: string;
+  deleted_count?: number; 
+  // Add any other common fields if they exist across various standard responses
 } 

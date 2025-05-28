@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useCallback, CSSProperties, useRef } from 'react';
-import axios from 'axios';
 import 'leaflet/dist/leaflet.css';
 import L, { LatLngExpression, LeafletEvent, Layer as LeafletLayer } from 'leaflet';
 import { MapContainer, TileLayer, Marker, Popup, GeoJSON, LayersControl, FeatureGroup, ScaleControl } from 'react-leaflet';
@@ -13,21 +12,26 @@ import type { Feature, FeatureCollection, Point, Polygon, MultiPolygon } from 'g
 import {
   Species,
   GridPoint,
-  HabitatOverlap,
   ObservationResponse,
   ObservationFeature,
   HabitatAreaFeature,
-  HabitatAreaResponse,
   MapFeature,
-  HabitatAreaPreviewResponse,
   OverlapResult,
   CalculatedHabitat,
   LayerVisibility,
   ObservationCache,
   HeatmapPoint
 } from '@/types/map';
+import type { 
+    HabitatOverlapResponse,
+    HabitatAreaPreviewResponse,
+    ObservationListResponse
+} from '@/types/api';
 import MapControls from '@/components/MapControls/MapControls';
 import ObservationsLayer from '@/components/MapLayers/ObservationsLayer';
+import { speciesService } from '@/services/speciesService';
+import { observationService } from '@/services/observationService';
+import { habitatService } from '@/services/habitatService';
 
 // --- Leaflet Icon Setup ---
 delete (L.Icon.Default.prototype as any)._getIconUrl;
@@ -38,13 +42,8 @@ L.Icon.Default.mergeOptions({
 });
 
 // --- Configuration ---
-const API_BASE_URL = '/api/v1';
 const MAP_INITIAL_CENTER: LatLngExpression = [55.75, 37.61];
 const MAP_INITIAL_ZOOM = 4;
-
-const axiosInstance = axios.create({
-  baseURL: API_BASE_URL,
-});
 
 // --- Helper Function for Color ---
 const stringToColor = (str: string): string => {
@@ -90,7 +89,7 @@ function GeoDataMapPage(): JSX.Element {
   const [isLoadingHabitats, setIsLoadingHabitats] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [overlapData, setOverlapData] = useState<HabitatOverlap | null>(null);
+  const [overlapData, setOverlapData] = useState<HabitatOverlapResponse | null>(null);
   const [isLoadingOverlap, setIsLoadingOverlap] = useState<boolean>(false);
 
   const [calculatedKDE, setCalculatedKDE] = useState<HabitatAreaFeature | null>(null);
@@ -160,11 +159,12 @@ function GeoDataMapPage(): JSX.Element {
     setIsLoadingSpecies(true);
     setError(null);
     try {
-      const response = await axiosInstance.get<Species[]>('/species/');
-      setSpeciesList(response.data);
+      const speciesData = await speciesService.getAllSpecies();
+      setSpeciesList(speciesData as Species[]);
     } catch (e: any) {
-      setError(`Failed to load species: ${e.response?.data?.detail || e.message || 'Unknown error'}`);
-      toast.error('Ошибка загрузки списка видов');
+      const errorMessage = e.response?.data?.detail || e.message || 'Unknown error';
+      setError(`Failed to load species: ${errorMessage}`);
+      toast.error(`Ошибка загрузки списка видов: ${errorMessage}`);
     } finally {
       setIsLoadingSpecies(false);
     }
@@ -209,27 +209,29 @@ function GeoDataMapPage(): JSX.Element {
 
     try {
       const fetchPromises = selectedSpeciesIds.map(speciesId => {
-        const params = new URLSearchParams();
-        params.append('species_id', speciesId.toString());
-        if (dateRange[0]) params.append('start_date', dateRange[0]);
-        if (dateRange[1]) params.append('end_date', dateRange[1]);
-        params.append('limit', '2000');
+        const filters: any = {
+          species_id: speciesId,
+          limit: 2000,
+        };
+        if (dateRange[0]) filters.start_date = dateRange[0];
+        if (dateRange[1]) filters.end_date = dateRange[1];
 
-        const bufferedBounds = mapBounds.pad(0.1);
-        params.append('min_lon', bufferedBounds.getWest().toString());
-        params.append('min_lat', bufferedBounds.getSouth().toString());
-        params.append('max_lon', bufferedBounds.getEast().toString());
-        params.append('max_lat', bufferedBounds.getNorth().toString());
-
-        return axiosInstance.get<ObservationResponse>('/observations/', { params });
+        if (mapBounds) {
+          const bufferedBounds = mapBounds.pad(0.1);
+          filters.min_lon = bufferedBounds.getWest();
+          filters.min_lat = bufferedBounds.getSouth();
+          filters.max_lon = bufferedBounds.getEast();
+          filters.max_lat = bufferedBounds.getNorth();
+        }
+        return observationService.getAllObservations(filters, 0, filters.limit);
       });
 
       const responses = await Promise.all(fetchPromises);
       const allObsFeatures: ObservationFeature[] = [];
       const currentHeatmapPoints: HeatmapPoint[] = [];
 
-      responses.forEach((response) => {
-        (response.data.observations || []).forEach((obs: any) => {
+      responses.forEach((response: ObservationListResponse) => {
+        (response.observations || []).forEach((obs: any) => {
           const feature = {
             type: 'Feature' as const,
             geometry: {
@@ -252,7 +254,7 @@ function GeoDataMapPage(): JSX.Element {
           currentHeatmapPoints.push({
             lat: obs.location.coordinates[1],
             lng: obs.location.coordinates[0],
-            intensity: obs.density || 1.0
+            intensity: (obs as any).density || 1.0
           });
         });
       });
@@ -295,7 +297,7 @@ function GeoDataMapPage(): JSX.Element {
     } finally {
       setIsLoadingNewObservations(false);
     }
-  }, [selectedSpeciesIds, dateRange, mapBounds, showObservations, showHeatmap, speciesList, axiosInstance, observationCache]);
+  }, [selectedSpeciesIds, dateRange, mapBounds, showObservations, showHeatmap, speciesList, observationCache]);
 
   const fetchHabitatAreas = useCallback(async () => {
     setIsLoadingHabitats(true);
@@ -310,26 +312,24 @@ function GeoDataMapPage(): JSX.Element {
     try {
         const responses = await Promise.all(
             selectedSpeciesIds.map(speciesId => 
-                axiosInstance.get<HabitatAreaResponse[]>(`/habitats/?species_id=${speciesId}&limit=100`)
+                habitatService.getAllHabitatAreas(speciesId, undefined, 0, 100)
             )
         );
 
-        const allHabitats: HabitatAreaFeature[] = responses.flatMap((response) => {
-            return response.data.map(habitat => ({
-                type: 'Feature' as const,
-                geometry: habitat.polygon,
-                properties: {
-                    id: habitat.id,
-                    species_id: habitat.species_id,
-                    species_name: habitat.species.name,
-                    method: habitat.method.toUpperCase() as 'MCP' | 'KDE',
-                    parameters: habitat.parameters,
-                    calculated_at: habitat.calculated_at,
-                    source_observation_count: habitat.source_observation_count,
-                    user_id: habitat.user_id,
-                }
-            })) as HabitatAreaFeature[];
-        });
+        const allHabitats: HabitatAreaFeature[] = responses.flat().map(habitat => ({
+            type: 'Feature' as const,
+            geometry: habitat.polygon,
+            properties: {
+                id: habitat.id,
+                species_id: habitat.species_id,
+                species_name: habitat.species.name,
+                method: habitat.method.toUpperCase() as 'MCP' | 'KDE',
+                parameters: habitat.parameters,
+                calculated_at: habitat.calculated_at,
+                source_observation_count: habitat.source_observation_count,
+                user_id: (habitat as any).user_id,
+            }
+        })) as HabitatAreaFeature[];
         setHabitatAreas(allHabitats);
 
     } catch (e: any) {
@@ -340,7 +340,7 @@ function GeoDataMapPage(): JSX.Element {
     } finally {
       setIsLoadingHabitats(false);
     }
-  }, [selectedSpeciesIds, axiosInstance]);
+  }, [selectedSpeciesIds]);
 
   const fetchOverlapData = useCallback(async (species1Id: number, species2Id: number) => {
     if (!species1Id || !species2Id) {
@@ -352,10 +352,8 @@ function GeoDataMapPage(): JSX.Element {
     setError(null);
 
     try {
-      const response = await axiosInstance.post<HabitatOverlap>(`/habitats/overlap/${species1Id}/${species2Id}`, {
-        method: 'kde'
-      });
-      setOverlapData(response.data);
+      const responseData = await habitatService.getHabitatOverlap(species1Id, species2Id, { method: 'kde' });
+      setOverlapData(responseData);
     } catch (e: any) {
       console.error('Failed to fetch overlap data:', e);
       setError(`Failed to load overlap data: ${e.response?.data?.detail || e.message || 'Unknown error'}`);
@@ -484,12 +482,7 @@ function GeoDataMapPage(): JSX.Element {
           },
         };
 
-        const response = await axiosInstance.post<HabitatAreaPreviewResponse>(
-          `/habitats/preview/${speciesId}/${method.toLowerCase()}`,
-          requestBody
-        );
-        
-        const data = response.data;
+        const data = await habitatService.getHabitatPreview(speciesId, method, requestBody);
         
         if (data.polygon) {
           if (method === 'KDE' && data.grid_points && data.grid_points.length > 0) {

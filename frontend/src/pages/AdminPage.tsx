@@ -34,6 +34,7 @@ import '@geoman-io/leaflet-geoman-free';
 import '@geoman-io/leaflet-geoman-free/dist/leaflet-geoman.css';
 import { EditObservationModal } from '@/components/modals/EditObservationModal';
 import Papa from 'papaparse'; // For CSV header parsing
+import { ObservationTable } from '@/components/ObservationTable'; // Added import
 
 // Import MarkerClusterGroup and its CSS
 import MarkerClusterGroup from 'react-leaflet-markercluster';
@@ -43,8 +44,13 @@ import 'leaflet.markercluster/dist/MarkerCluster.Default.css';
 // --- Services ---
 import { speciesService } from '@/services/speciesService';
 import { observationService } from '@/services/observationService'; // Ensure this import is present
-import type { Species, ObservationRead, SpeciesCheckResponse, DBSpeciesBase, Point as GeoJSONPoint } from '@/types/api';
+import { adminService } from '@/services/adminService'; 
+import type { Species, ObservationRead, SpeciesCheckResponse, DBSpeciesBase, Point as GeoJSONPoint, UserRead, UserActivityRead, AdminStatistics, UserRole, UserUpdate } from '@/types/api';
 import type { ObservationFilterParams } from '@/types/api';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogTrigger, DialogClose } from "@/components/ui/dialog";
+import { UserRole as UserRoleEnum } from "@/types/api"; // UserRole is already imported here, ensure it's a value import
+import type { HandledApiError } from "@/services/apiClient"; // Import HandledApiError
+import { apiClient } from '@/services/apiClient'; // Added apiClient import
 
 // --- Mock API Functions ---
 // const mockApi = { ... }; // Removing the entire mockApi object
@@ -58,9 +64,9 @@ const datasetUploadSchema = z.object({
   datasetName: z.string().min(1, { message: "Название набора данных обязательно." }),
   datasetDescription: z.string().optional(), // Description can be optional
   archiveFile: z.instanceof(FileList)
-    .refine(f => f?.length === 1, 'Необходим один архивный файл.')
-    .refine(f => f?.[0]?.size <= MAX_FILE_SIZE, `Максимальный размер архива 500MB.`)
-    .refine(f => ALLOWED_ARCHIVE_TYPES.includes(f?.[0]?.type), 'Неподдерживаемый тип архива. Используйте .zip'),
+      .refine(f => f?.length === 1, 'Необходим один архивный файл.')
+      .refine(f => f?.[0]?.size <= MAX_FILE_SIZE, `Максимальный размер архива 500MB.`)
+      .refine(f => ALLOWED_ARCHIVE_TYPES.includes(f?.[0]?.type), 'Неподдерживаемый тип архива. Используйте .zip'),
   csvFile: z.instanceof(FileList)
     .refine(f => f?.length === 1, 'Необходим один CSV файл.')
     .refine(f => ALLOWED_CSV_TYPES.includes(f?.[0]?.type), 'Неподдерживаемый тип файла. Используйте .csv'),
@@ -277,24 +283,407 @@ const areDeletionMapPropsEqual = (prevProps: DeletionMapProps, nextProps: Deleti
 
 const DeletionMapComponent = React.memo(DeletionMapComponentInternal, areDeletionMapPropsEqual);
 
+// Placeholder Tab Components
+const UserManagementTab: React.FC = () => {
+  const [users, setUsers] = useState<UserRead[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [selectedUser, setSelectedUser] = useState<UserRead | null>(null);
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+  const [isConfirmModalOpen, setIsConfirmModalOpen] = useState(false);
+  const [confirmAction, setConfirmAction] = useState<
+    (() => Promise<void>) | null
+  >(null);
+  const [confirmTitle, setConfirmTitle] = useState("");
+  const [confirmDescription, setConfirmDescription] = useState("");
 
-// --- Main Admin Page Component ---
+  const fetchUsers = useCallback(async () => {
+    try {
+      setLoading(true);
+      const fetchedUsers = await adminService.getUsers({ limit: 100 });
+      setUsers(fetchedUsers);
+      setError(null);
+    } catch (err: any) {
+      const apiError = err as HandledApiError; // Type assertion from apiClient
+      setError(apiError.message || "Не удалось загрузить пользователей");
+      toast.error(apiError.message || "Не удалось загрузить пользователей.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchUsers();
+  }, [fetchUsers]);
+
+  const handleOpenEditModal = (user: UserRead) => {
+    setSelectedUser(user);
+    setIsEditModalOpen(true);
+  };
+
+  const handleCloseEditModal = () => {
+    setSelectedUser(null);
+    setIsEditModalOpen(false);
+  };
+
+  const handleUpdateUser = async (userId: number, data: Partial<UserUpdate>) => {
+    try {
+      await adminService.updateUser(userId, data);
+      toast.success(`Пользователь ${userId} успешно обновлен.`);
+      handleCloseEditModal();
+      fetchUsers(); // Refresh list
+    } catch (err: any) {
+      const apiError = err as HandledApiError;
+      toast.error(apiError.message || "Не удалось обновить пользователя.");
+    }
+  };
+
+  const openConfirmationModal = (
+    title: string,
+    description: string,
+    action: () => Promise<void>
+  ) => {
+    setConfirmTitle(title);
+    setConfirmDescription(description);
+    setConfirmAction(() => action); // Store the action
+    setIsConfirmModalOpen(true);
+  };
+
+  const handleConfirm = async () => {
+    if (confirmAction) {
+      await confirmAction();
+    }
+    setIsConfirmModalOpen(false);
+    setConfirmAction(null);
+    fetchUsers();
+  };
+
+  const handleDeleteUser = (user: UserRead) => {
+    openConfirmationModal(
+      `Удалить пользователя ${user.username}?`,
+      `Вы уверены, что хотите удалить пользователя ${user.email}? Это действие необратимо.`,
+      async () => {
+        try {
+          await adminService.deleteUser(user.id);
+          toast.success(`Пользователь ${user.username} успешно удален.`);
+        } catch (err: any) {
+          const apiError = err as HandledApiError;
+          toast.error(apiError.message || "Не удалось удалить пользователя.");
+        }
+      }
+    );
+  };
+
+  const handleToggleActivateUser = (user: UserRead) => {
+    const actionText = user.is_active ? "Деактивировать" : "Активировать";
+    const actionTextPast = user.is_active ? "деактивирован" : "активирован";
+    openConfirmationModal(
+      `${actionText} пользователя ${user.username}?`,
+      `Вы уверены, что хотите ${actionText.toLowerCase()} пользователя ${user.email}?`,
+      async () => {
+        try {
+          if (user.is_active) {
+            await adminService.deactivateUser(user.id);
+          } else {
+            await adminService.activateUser(user.id);
+          }
+          toast.success(`Пользователь ${user.username} успешно ${actionTextPast}.`);
+        } catch (err: any) {
+          const apiError = err as HandledApiError;
+          toast.error(apiError.message || `Не удалось ${actionText.toLowerCase()} пользователя.`);
+        }
+      }
+    );
+  };
+  
+  // Edit User Form Schema (simplified for example)
+  const editUserSchema = z.object({
+    username: z.string().min(3).optional(),
+    role: z.nativeEnum(UserRoleEnum).optional(),
+    // is_active and is_verified are handled by separate actions
+  });
+  type EditUserFormValues = z.infer<typeof editUserSchema>;
+
+  const editForm = useForm<EditUserFormValues>({
+    resolver: zodResolver(editUserSchema),
+  });
+
+  useEffect(() => {
+    if (selectedUser && isEditModalOpen) {
+      editForm.reset({
+        username: selectedUser.username,
+        role: selectedUser.role as UserRoleEnum,
+      });
+    }
+  }, [selectedUser, isEditModalOpen, editForm]);
+
+  const onEditSubmit = (values: EditUserFormValues) => {
+    if (selectedUser) {
+        const updateData: Partial<UserUpdate> = {};
+        if (values.username && values.username !== selectedUser.username) updateData.username = values.username;
+        if (values.role && values.role !== selectedUser.role) updateData.role = values.role as UserRole;
+
+        if (Object.keys(updateData).length > 0) {
+            handleUpdateUser(selectedUser.id, updateData);
+        } else {
+            toast.info("Изменений не обнаружено.");
+            handleCloseEditModal();
+        }
+    }
+  };
+
+  if (loading) return <p className="p-4">Загрузка пользователей...</p>;
+  if (error) return <p className="p-4 text-red-500">Ошибка: {error}</p>;
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Управление пользователями</CardTitle>
+        <CardDescription>Управление учетными записями, ролями и статусами пользователей. Найдено {users.length} пользователей.</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>ID</TableHead>
+              <TableHead>Email</TableHead>
+              <TableHead>Имя пользователя</TableHead>
+              <TableHead>Роль</TableHead>
+              <TableHead>Активен</TableHead>
+              <TableHead>Подтвержден</TableHead>
+              <TableHead className="text-right">Действия</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {users.map(user => (
+              <TableRow key={user.id}>
+                <TableCell>{user.id}</TableCell>
+                <TableCell>{user.email}</TableCell>
+                <TableCell>{user.username}</TableCell>
+                <TableCell>{user.role}</TableCell>
+                <TableCell>{user.is_active ? 'Да' : 'Нет'}</TableCell>
+                <TableCell>{user.is_verified ? 'Да' : 'Нет'}</TableCell>
+                <TableCell className="text-right space-x-1">
+                  <Button variant="outline" size="sm" onClick={() => handleOpenEditModal(user)}>
+                    <Pencil className="h-3 w-3 mr-1" /> Редактировать
+                  </Button>
+                  <Button 
+                    variant={user.is_active ? "secondary" : "default"} 
+                    size="sm" 
+                    onClick={() => handleToggleActivateUser(user)}
+                    className="min-w-[140px] text-center"
+                  >
+                     {user.is_active ? "Деактивировать" : "Активировать"}
+                  </Button>
+                  <Button variant="destructive" size="icon" onClick={() => handleDeleteUser(user)} title="Удалить">
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+        {users.length === 0 && !loading && <p className="mt-4 text-center">Пользователи не найдены.</p>}
+      </CardContent>
+
+      {/* Edit User Modal */}
+      {selectedUser && (
+        <Dialog open={isEditModalOpen} onOpenChange={setIsEditModalOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Редактировать пользователя: {selectedUser.username}</DialogTitle>
+              <DialogDescription>
+                Измените данные пользователя. Нажмите "Сохранить", когда закончите.
+                <br />
+                <span className="text-sm text-muted-foreground">Email: {selectedUser.email} (нельзя изменить)</span>
+              </DialogDescription>
+            </DialogHeader>
+            <Form {...editForm}>
+                <form onSubmit={editForm.handleSubmit(onEditSubmit)} className="space-y-4">
+                    <FormField
+                        control={editForm.control}
+                        name="username"
+                        render={({ field }) => (
+                            <FormItem>
+                                <FormLabel>Имя пользователя</FormLabel>
+                                <FormControl><Input {...field} /></FormControl>
+                                <FormMessage />
+                            </FormItem>
+                        )}
+                    />
+                    <FormField
+                        control={editForm.control}
+                        name="role"
+                        render={({ field }) => (
+                            <FormItem>
+                                <FormLabel>Роль</FormLabel>
+                                <Select onValueChange={field.onChange} defaultValue={field.value as UserRoleEnum}>
+                                    <FormControl><SelectTrigger><SelectValue placeholder="Выберите роль" /></SelectTrigger></FormControl>
+                                    <SelectContent>
+                                        {Object.values(UserRoleEnum).map(roleValue => (
+                                            <SelectItem key={roleValue} value={roleValue}>{roleValue.toUpperCase()}</SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                                <FormMessage />
+                            </FormItem>
+                        )}
+                    />
+                    <DialogFooter>
+                        <Button type="button" variant="outline" onClick={handleCloseEditModal}>Отмена</Button>
+                        <Button type="submit">Сохранить изменения</Button>
+                    </DialogFooter>
+                </form>
+            </Form>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {/* Confirmation Modal */}
+      <Dialog open={isConfirmModalOpen} onOpenChange={setIsConfirmModalOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{confirmTitle}</DialogTitle>
+            <DialogDescription>{confirmDescription}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsConfirmModalOpen(false)}>Отмена</Button>
+            <Button variant="destructive" onClick={handleConfirm}>Подтвердить</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </Card>
+  );
+};
+
+const SystemStatisticsTab: React.FC = () => {
+  const [stats, setStats] = useState<AdminStatistics | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const downloadJsonReport = (data: any, filename: string) => {
+    if (!data) {
+      toast.error("Нет данных для скачивания.");
+      return;
+    }
+    try {
+      const jsonString = JSON.stringify(data, null, 2); // Pretty print JSON
+      const blob = new Blob([jsonString], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      toast.success(`Отчет "${filename}" успешно скачан.`);
+    } catch (e) {
+      console.error("Ошибка при скачивании JSON отчета:", e);
+      toast.error("Не удалось скачать отчет.");
+    }
+  };
+
+  useEffect(() => {
+    const fetchStats = async () => {
+      try {
+        setLoading(true);
+        const fetchedStats = await adminService.getStatistics();
+        setStats(fetchedStats);
+        setError(null);
+      } catch (err: any) {
+        const apiError = err as HandledApiError;
+        setError(apiError.message || "Не удалось загрузить статистику системы");
+        toast.error(apiError.message || "Не удалось загрузить статистику системы.");
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchStats();
+  }, []);
+
+  if (loading) return <p className="p-4">Загрузка статистики...</p>;
+  if (error) return <p className="p-4 text-red-500">Ошибка: {error}</p>;
+  if (!stats) return <p className="p-4">Статистика недоступна.</p>;
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Статистика системы</CardTitle>
+        <CardDescription>Обзор общесистемных данных и активности.</CardDescription>
+      </CardHeader>
+      <CardContent className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Всего пользователей</CardTitle>
+          </CardHeader>
+          <CardContent><div className="text-2xl font-bold">{stats.total_users ?? 'Н/Д'}</div></CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Активных пользователей</CardTitle>
+          </CardHeader>
+          <CardContent><div className="text-2xl font-bold">{stats.active_users ?? 'Н/Д'}</div></CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Подтвержденных пользователей</CardTitle>
+          </CardHeader>
+          <CardContent><div className="text-2xl font-bold">{stats.verified_users ?? 'Н/Д'}</div></CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Администраторов</CardTitle>
+          </CardHeader>
+          <CardContent><div className="text-2xl font-bold">{stats.admin_users ?? 'Н/Д'}</div></CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Всего наблюдений</CardTitle>
+          </CardHeader>
+          <CardContent><div className="text-2xl font-bold">{stats.total_observations ?? 'Н/Д'}</div></CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Всего видов</CardTitle>
+          </CardHeader>
+          <CardContent><div className="text-2xl font-bold">{stats.total_species ?? 'Н/Д'}</div></CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Всего активностей</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold mb-2">{stats.total_activities ?? 'Н/Д'}</div>
+            {stats.recent_activities && stats.recent_activities.length > 0 && (
+              <Button 
+                variant="outline" 
+                size="sm" 
+                onClick={() => downloadJsonReport(stats.recent_activities, 'recent_activities_report.json')}
+              >
+                Скачать недавние (JSON)
+              </Button>
+            )}
+          </CardContent>
+        </Card>
+      </CardContent>
+    </Card>
+  );
+};
+
 export default function AdminPage() {
   const [species, setSpecies] = useState<Species[]>([]);
   const [loadingSpecies, setLoadingSpecies] = useState(false);
   const [observationLocations, setObservationLocations] = useState<ObservationRead[]>([]);
   const [loadingFilteredObservations, setLoadingFilteredObservations] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
-  const [isDeleting, setIsDeleting] = useState(false); // Single state for all delete operations
-  const [selectedObservation, setSelectedObservation] = useState<ObservationRead | null>(null); // Typed state
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [selectedObservation, setSelectedObservation] = useState<ObservationRead | null>(null);
   const [isEditingModalOpen, setIsEditingModalOpen] = useState(false);
   const [csvFileForCheck, setCsvFileForCheck] = useState<File | null>(null);
   const [csvHeaders, setCsvHeaders] = useState<string[]>([]);
   const [showColumnMapping, setShowColumnMapping] = useState(false);
-  const [columnMappings, setColumnMappings] = useState<{ filename: string; species: string; }>({
-    filename: '',
-    species: '', // Initialize species to empty string for consistent placeholder behavior
-  });
+  const [columnMappings, setColumnMappings] = useState<{ filename: string; species: string; }>({ filename: '', species: '' });
   const [showSpeciesMapping, setShowSpeciesMapping] = useState(false);
   const [unmatchedSpecies, setUnmatchedSpecies] = useState<string[]>([]);
   const [speciesUserMappings, setSpeciesUserMappings] = useState<Record<string, string | { name: string; createNew: boolean }>>({});
@@ -302,44 +691,22 @@ export default function AdminPage() {
   const [dbSpeciesForMapping, setDbSpeciesForMapping] = useState<DBSpeciesBase[]>([]);
   const [isColumnMappingConfirmed, setIsColumnMappingConfirmed] = useState(false);
 
-  // Pagination state
+  // Pagination state for Observation List
   const [currentPage, setCurrentPage] = useState(1);
-  const [itemsPerPage, setItemsPerPage] = useState(10); // Default items per page
-  const [totalPages, setTotalPages] = useState(0); // New state for total pages
+  const [itemsPerPage, setItemsPerPage] = useState(6);
+  const [totalPages, setTotalPages] = useState(0);
 
-  // Filtering state
+  // Filtering state for Observation List
   const [filterSpecies, setFilterSpecies] = useState('');
   const [filterTimestamp, setFilterTimestamp] = useState<DateRange | undefined>(undefined);
-  const [filterConfidence, setFilterConfidence] = useState(0); // Added confidence filter state (0 to 1)
+  const [filterConfidence, setFilterConfidence] = useState(0);
+  const ALL_SPECIES_FILTER_VALUE = "ALL_SPECIES";
 
-  const [pageInput, setPageInput] = useState<string>(""); // State for page input
-
-  const ALL_SPECIES_FILTER_VALUE = "ALL_SPECIES"; // Define constant for "all species"
-
-  // New state for all observation locations for the deletion map
+  // Data for DeletionMapComponent
   const [allObservationMapData, setAllObservationMapData] = useState<ObservationRead[]>([]);
   const [loadingAllMapData, setLoadingAllMapData] = useState(false);
-
-  // Define fetchLocations here and wrap in useCallback
-  // Removing the old fetchLocations and its useEffect as its functionality is covered or replaced
-  /*
-  const fetchLocations = useCallback(async () => {
-      setLoadingFilteredObservations(true);
-      try {
-          const locationsData = await observationService.getAllObservations();
-          setObservationLocations(locationsData);
-      } catch (error) {
-          console.error("Error fetching locations:", error);
-          toast.error("Ошибка загрузки локаций наблюдений");
-      } finally {
-          setLoadingFilteredObservations(false);
-      }
-  }, []); 
-
-  useEffect(() => {
-    fetchLocations(); 
-  }, [fetchLocations]);
-  */
+  
+  const [activeTab, setActiveTab] = useState("data-management"); // Default to the consolidated tab
 
   const uploadForm = useForm<z.infer<typeof datasetUploadSchema>>({
     resolver: zodResolver(datasetUploadSchema),
@@ -376,7 +743,6 @@ export default function AdminPage() {
     },
   });
 
-
   // Fetch Species
   useEffect(() => {
     async function fetchSpeciesData() {
@@ -385,7 +751,7 @@ export default function AdminPage() {
         const data = await speciesService.getAllSpecies();
         setSpecies(data);
       } catch (error) {
-          console.error("Error fetching species:", error);
+          console.error("Ошибка загрузки видов:", error);
           toast.error('Ошибка загрузки списка видов');
       } finally {
         setLoadingSpecies(false);
@@ -393,11 +759,6 @@ export default function AdminPage() {
     }
     fetchSpeciesData();
   }, []);
-
-   // Fetch Observation Locations for the map ON MOUNT
-  useEffect(() => {
-    // Call the useCallback version
-  }, []); // Add fetchLocations to dependency array
 
   // Helper to parse CSV headers
   const parseCsvHeaders = (file: File, callback: (headers: string[]) => void) => {
@@ -412,11 +773,21 @@ export default function AdminPage() {
         }
       },
       error: (error: Papa.ParseError) => { // Typed error
-        console.error("Error parsing CSV headers:", error);
+        console.error("Ошибка парсинга заголовков CSV:", error);
         toast.error("Не удалось прочитать заголовки CSV файла.");
         callback([]);
       }
     } as any); // Cast the config object to any
+  };
+
+  const handleArchiveFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = event.target.files;
+    if (files && files.length > 0) {
+      uploadForm.setValue('archiveFile', files, { shouldValidate: true });
+    } else {
+      // If user deselects or input is cleared
+      uploadForm.setValue('archiveFile', new DataTransfer().files, { shouldValidate: true });
+    }
   };
 
   const handleCsvFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -491,20 +862,21 @@ export default function AdminPage() {
     setSpeciesUserMappings({});
     setIsColumnMappingConfirmed(true); // Set confirmation to true
 
+    console.log('csvFileForCheck before append:', csvFileForCheck, typeof csvFileForCheck);
     const formData = new FormData();
     formData.append('csv_file', csvFileForCheck);
     formData.append('species_column_name', columnMappings.species);
 
     try {
-      const response = await fetch('/api/v1/observations/check_species_in_csv', {
-        method: 'POST',
-        body: formData,
+      const response = await apiClient.post<SpeciesCheckResponse>('/observations/check_species_in_csv', formData, {
+        headers: {
+          // Axios will set Content-Type to multipart/form-data automatically for FormData
+          // but if there were any issues, explicitly setting it could be an option:
+          // 'Content-Type': 'multipart/form-data',
+        }
       });
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ detail: 'Failed to check CSV for species.' }));
-        throw new Error(errorData.detail);
-      }
-      const result: SpeciesCheckResponse = await response.json();
+      const result = response.data; // Axios provides data directly in response.data
+
       setDbSpeciesForMapping(result.db_species);
       if (result.unmatched_csv_species && result.unmatched_csv_species.length > 0) {
         setUnmatchedSpecies(result.unmatched_csv_species);
@@ -518,7 +890,7 @@ export default function AdminPage() {
         setShowSpeciesMapping(false); 
       }
     } catch (error: any) {
-      console.error("Error checking CSV species:", error);
+      console.error("Ошибка проверки видов CSV:", error);
       toast.error(error.message || 'Ошибка при проверке видов в CSV.');
       setShowSpeciesMapping(false);
     } finally {
@@ -557,19 +929,12 @@ export default function AdminPage() {
     fd.append('species_column', columnMappings.species);
 
     try {
-      const response = await fetch('/api/v1/observations/upload_dataset', {
-        method: 'POST',
-        body: fd,
+      const response = await apiClient.post<{message: string}>('/observations/upload_dataset', fd, {
+        // FormData requests typically don't need Content-Type explicitly set with Axios,
+        // as Axios and the browser will handle it for multipart/form-data.
       });
+      const result = response.data; // Axios provides data directly in response.data
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ 
-          detail: `Dataset upload failed: ${response.status} ${response.statusText || 'Unknown error'}` 
-        }));
-        throw new Error(errorData.detail || `Dataset upload failed: ${response.statusText}`);
-      }
-
-      const result = await response.json();
       toast.success(result.message || 'Процесс загрузки датасета (виды только по карте, Гео/Время из EXIF) успешно запущен!');
       uploadForm.reset();
       setCsvFileForCheck(null); setShowColumnMapping(false); setCsvHeaders([]);
@@ -579,7 +944,7 @@ export default function AdminPage() {
       fetchAllObservationsForMap();
 
     } catch (error: any) {
-        console.error("Upload error:", error);
+        console.error("Ошибка загрузки:", error);
         toast.error(error.message || 'Непредвиденная ошибка при загрузке датасета.');
     } finally {
       setIsUploading(false);
@@ -609,7 +974,7 @@ export default function AdminPage() {
               toast.error('Не удалось удалить наблюдения по времени или ответ от сервера пуст.');
           }
       } catch (error: any) {
-          console.error("Delete by time error:", error);
+          console.error("Ошибка удаления по времени:", error);
           toast.error(error.message || 'Непредвиденная ошибка при удалении по времени');
       } finally {
           setIsDeleting(false);
@@ -638,7 +1003,7 @@ export default function AdminPage() {
         toast.error('Не удалось удалить наблюдения по виду или ответ от сервера пуст.');
       }
     } catch (error: any) {
-        console.error("Delete by species error:", error);
+        console.error("Ошибка удаления по виду:", error);
         toast.error(error.message || 'Непредвиденная ошибка при удалении по виду');
     } finally {
       setIsDeleting(false);
@@ -665,7 +1030,7 @@ export default function AdminPage() {
         toast.error('Не удалось удалить наблюдения по области или ответ от сервера пуст.');
       }
     } catch (error: any) {
-        console.error("Delete by area error:", error);
+        console.error("Ошибка удаления по области:", error);
         toast.error(error.message || 'Непредвиденная ошибка при удалении по области');
     } finally {
       setIsDeleting(false);
@@ -695,7 +1060,7 @@ export default function AdminPage() {
             toast.error(`Не удалось обновить вид для наблюдения ${observationId}.`);
         }
     } catch (error: any) {
-        console.error("Update observation error:", error);
+        console.error("Ошибка обновления наблюдения:", error);
         toast.error(error.message || 'Непредвиденная ошибка при обновлении наблюдения');
     } finally {
         setIsDeleting(false); 
@@ -722,7 +1087,7 @@ export default function AdminPage() {
         toast.error(`Не удалось удалить наблюдение ID: ${observation.id}. Ответ от сервера был пустым, но не было ошибки HTTP.`);
       }
     } catch (error: any) {
-      console.error("Error deleting observation:", error);
+      console.error("Ошибка удаления наблюдения:", error);
       toast.error(error.message || `Ошибка при удалении наблюдения ID: ${observation.id}.`);
     } finally {
       setIsDeleting(false);
@@ -732,9 +1097,8 @@ export default function AdminPage() {
   // Log state variables relevant to the upload button's disabled status
   console.log('AdminPage render state:', { isUploading, isColumnMappingConfirmed, showColumnMapping });
 
-  // Function to fetch observations for the filtered list
   const fetchObservations = useCallback(async () => {
-    setLoadingFilteredObservations(true); // Use renamed state
+    setLoadingFilteredObservations(true);
     try {
       const filters: ObservationFilterParams = {};
       if (filterSpecies && filterSpecies !== ALL_SPECIES_FILTER_VALUE) {
@@ -742,7 +1106,7 @@ export default function AdminPage() {
       }
       if (filterTimestamp?.from) filters.start_date = filterTimestamp.from.toISOString();
       if (filterTimestamp?.to) filters.end_date = filterTimestamp.to.toISOString();
-      if (filterConfidence > 0) filters.min_confidence = filterConfidence; // Added confidence filter logic
+      if (filterConfidence > 0) filters.min_confidence = filterConfidence;
 
       const response = await observationService.getAllObservations(
         Object.keys(filters).length > 0 ? filters : undefined,
@@ -756,565 +1120,301 @@ export default function AdminPage() {
       } else {
         setObservationLocations([]);
         setTotalPages(0);
-        console.warn("Observations data is not in the expected format:", response);
       }
     } catch (error) {
-      console.error("Failed to fetch observation locations:", error);
-      toast.error('Не удалось загрузить точки наблюдений.');
-      setObservationLocations([]); // Set to empty array on error
+      toast.error('Не удалось загрузить наблюдения.');
+      setObservationLocations([]);
       setTotalPages(0);
     } finally {
-      setLoadingFilteredObservations(false); // Use renamed state
+      setLoadingFilteredObservations(false);
     }
-  }, [currentPage, itemsPerPage, filterSpecies, filterTimestamp, filterConfidence]); // Updated dependencies
+  }, [currentPage, itemsPerPage, filterSpecies, filterTimestamp, filterConfidence, ALL_SPECIES_FILTER_VALUE]);
 
-  // New function to fetch all observations for the deletion map
   const fetchAllObservationsForMap = useCallback(async () => {
-    setLoadingAllMapData(true);
-    try {
-      // Fetch all observations - assuming a large limit or a specific backend implementation
-      // For now, fetching with a limit of 10000 as a placeholder for "all"
-      const allData = await observationService.getAllObservations(undefined, 0, 10000);
-      console.log('[AdminPage] fetchAllObservationsForMap - raw response from service:', JSON.stringify(allData, null, 2)); // DEBUG
-      if (allData && Array.isArray(allData.observations)) {
-        console.log('[AdminPage] fetchAllObservationsForMap - setting allObservationMapData with count:', allData.observations.length); // DEBUG
-        setAllObservationMapData(allData.observations);
-      } else {
+    if (activeTab === "data-management") { // Only fetch if the main data tab is active
+        setLoadingAllMapData(true);
+        try {
+        const allData = await observationService.getAllObservations(undefined, 0, 10000); // Fetch a large number for the map
+        if (allData && Array.isArray(allData.observations)) {
+            setAllObservationMapData(allData.observations);
+        } else {
+            setAllObservationMapData([]);
+        }
+        } catch (error) {
+        toast.error('Не удалось загрузить все местоположения наблюдений для карты.');
         setAllObservationMapData([]);
-        console.warn("[AdminPage] fetchAllObservationsForMap - All map observations data is not in the expected array format or observations array is missing:", JSON.stringify(allData, null, 2)); // DEBUG
-      }
-    } catch (error) {
-      console.error("Failed to fetch all observation locations for map:", error);
-      toast.error('Не удалось загрузить все точки наблюдений для карты.');
-      setAllObservationMapData([]);
-    } finally {
-      setLoadingAllMapData(false);
+        } finally {
+        setLoadingAllMapData(false);
+        }
     }
-  }, []);
+  }, [activeTab]); // Re-fetch if data-management tab becomes active
 
   useEffect(() => {
     fetchObservations();
   }, [fetchObservations]);
 
-  // Fetch all map data on component mount
   useEffect(() => {
     fetchAllObservationsForMap();
   }, [fetchAllObservationsForMap]);
-
+  
   return (
     <div className="container mx-auto p-4 space-y-8">
       <Toaster richColors />
-
       <h1 className="text-3xl font-bold mb-6">Панель администрирования</h1>
 
-      <Tabs defaultValue="upload" className="w-full">
-        <TabsList className="grid w-full grid-cols-2">
-          <TabsTrigger value="upload"><UploadCloud className="mr-2 h-4 w-4" />Загрузка датасета</TabsTrigger>
-          <TabsTrigger value="manage"><Settings className="mr-2 h-4 w-4" />Управление наблюдениями</TabsTrigger>
+      <Tabs defaultValue="data-management" className="w-full" onValueChange={setActiveTab}>
+        <TabsList className="grid w-full grid-cols-1 md:grid-cols-3 mb-4">
+          <TabsTrigger value="data-management">Управление данными</TabsTrigger>
+          <TabsTrigger value="user-management">Управление пользователями</TabsTrigger>
+          <TabsTrigger value="system-statistics">Статистика системы</TabsTrigger>
         </TabsList>
 
-        {/* --- Upload Tab --- */}
-        <TabsContent value="upload">
-          <Card>
-            <CardHeader>
-              <CardTitle>Загрузить новый датасет</CardTitle>
-              <CardDescription>
-                Загрузите zip-архив с изображениями (.jpg, .jpeg) и соответствующий CSV-файл с метаданными.
-                CSV должен содержать колонки 'filename', 'species', 'latitude', 'longitude', 'timestamp'.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <Form {...uploadForm}>
-                <form 
-                  onSubmit={uploadForm.handleSubmit(
-                    onUploadSubmit, // onValid: This is your existing submit handler
-                    (errors) => { // onInvalid: This callback receives the errors if validation fails
-                      console.error('react-hook-form validation errors:', errors);
-                    }
-                  )}
-                  className="space-y-6"
-                >
-                  <FormField
-                    control={uploadForm.control}
-                    name="datasetName"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Название набора данных</FormLabel>
-                        <FormControl>
-                          <Input placeholder="Введите название датасета" {...field} disabled={isUploading} />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <FormField
-                    control={uploadForm.control}
-                    name="datasetDescription"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Описание набора данных (опционально)</FormLabel>
-                        <FormControl>
-                          <Input placeholder="Введите описание" {...field} disabled={isUploading} />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  {/* Archive File Input - Using register directly */}
-                  <FormItem>
-                    <FormLabel>Zip-архив с изображениями</FormLabel>
-                    <Input
-                      type="file"
-                      accept=".zip,application/zip,application/x-zip-compressed"
-                      disabled={isUploading}
-                      {...uploadForm.register("archiveFile")}
-                     />
-                    {/* Manually render FormMessage for register errors */}
-                    <FormMessage>
-                        {uploadForm.formState.errors.archiveFile?.message?.toString()}
-                    </FormMessage>
-                  </FormItem>
-
-                  {/* CSV File Input - Using register directly */}
-                  <FormItem>
-                    <FormLabel>CSV-файл с метаданными</FormLabel>
-                    <Input
-                      type="file"
-                      accept=".csv,text/csv"
-                      disabled={isUploading || isCheckingSpecies}
-                      onChange={handleCsvFileChange}
-                    />
-                    {/* Manually render FormMessage for register errors */}
-                    <FormMessage>
-                        {uploadForm.formState.errors.csvFile?.message?.toString()}
-                    </FormMessage>
-                  </FormItem>
-
-                  {showColumnMapping && (
-                    <Card className="mt-4">
-                      <CardHeader><CardTitle>Сопоставление колонок CSV</CardTitle></CardHeader>
-                      <CardContent className="space-y-4">
-                        <p className="text-sm text-muted-foreground">Выберите, какие колонки из вашего CSV файла соответствуют имени файла изображения и названию вида. Геоданные и время будут извлечены из EXIF.</p>
-                        {[ 
-                          {label: 'Имя файла изображения', field: 'filename' as keyof typeof columnMappings},
-                          {label: 'Название вида', field: 'species' as keyof typeof columnMappings},
-                        ].map(mapItem => (
-                          <div key={mapItem.field} className="grid grid-cols-3 items-center gap-4">
-                            <Label>{mapItem.label}</Label>
-                            <Select 
-                              onValueChange={(value) => handleColumnMappingChange(mapItem.field, value)}
-                              value={columnMappings[mapItem.field]} 
-                              disabled={csvHeaders.length === 0 || isColumnMappingConfirmed}
-                            >
-                              <SelectTrigger className="col-span-2">
-                                <SelectValue placeholder="Выберите колонку..." />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {csvHeaders.map(header => (
-                                  <SelectItem key={header} value={header}>{header}</SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                          </div>
-                        ))}
-                        <Button onClick={handleConfirmColumnsAndCheckSpecies} disabled={isCheckingSpecies || !columnMappings.filename || !columnMappings.species || isColumnMappingConfirmed}>
-                          {isCheckingSpecies ? 'Проверка видов...' : 'Подтвердить колонки и проверить виды'}
-                        </Button>
-                      </CardContent>
-                    </Card>
-                  )}
-
-                  {showSpeciesMapping && (
-                    <Card className="mt-4">
-                      <CardHeader><CardTitle>Сопоставление видов</CardTitle></CardHeader>
-                      <CardContent className="space-y-4">
-                        <p className="text-sm text-muted-foreground">
-                          Следующие виды из вашего CSV-файла не найдены в базе данных. Пожалуйста, сопоставьте их или выберите "Создать новый вид".
-                        </p>
-                        {unmatchedSpecies.map(csvName => (
-                          <div key={csvName} className="grid grid-cols-3 items-center gap-4">
-                            <Label className="truncate" title={csvName}>{csvName}</Label>
-                            <Select 
-                              onValueChange={(value) => handleSpeciesMappingChange(csvName, value)}
-                              defaultValue={String(speciesUserMappings[csvName] || 'CREATE_NEW')}
-                            >
-                              <SelectTrigger className="col-span-2">
-                                <SelectValue />
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectItem value="CREATE_NEW">Создать новый вид: "{csvName}"</SelectItem>
-                                {dbSpeciesForMapping.map(dbSp => (
-                                  <SelectItem key={dbSp.id} value={String(dbSp.id)}>{dbSp.name} (ID: {dbSp.id})</SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                          </div>
-                        ))}
-                      </CardContent>
-                    </Card>
-                  )}
-
-                  <Button type="submit" disabled={isUploading || !isColumnMappingConfirmed} className="w-full">
-                    {isUploading ? 'Загрузка...' : <><UploadCloud className="mr-2 h-4 w-4" /> Загрузить</>}
-                  </Button>
-                </form>
-              </Form>
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        {/* --- New Manage Observations Tab --- */}
-        <TabsContent value="manage">
+        <TabsContent value="data-management">
           <div className="space-y-6">
-            {/* Section for Deletion Operations */}
+            {/* 1. Upload Dataset Section */}
+            <Card>
+              <CardHeader>
+                <CardTitle>Загрузить новый датасет</CardTitle>
+                <CardDescription>
+                  Загрузите zip-архив с изображениями (.jpg, .jpeg) и соответствующий CSV-файл с метаданными.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <Form {...uploadForm}>
+                  <form onSubmit={uploadForm.handleSubmit(onUploadSubmit)} className="space-y-6">
+                    <FormField
+                      control={uploadForm.control}
+                      name="datasetName"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Название набора данных</FormLabel>
+                          <FormControl>
+                            <Input placeholder="Введите название датасета" {...field} disabled={isUploading} />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                    <FormField
+                      control={uploadForm.control}
+                      name="datasetDescription"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Описание набора данных (опционально)</FormLabel>
+                          <FormControl>
+                            <Input placeholder="Введите описание" {...field} disabled={isUploading} />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                    <FormItem>
+                      <FormLabel>Zip-архив</FormLabel>
+                      <Input 
+                        type="file" 
+                        accept=".zip" 
+                        onChange={handleArchiveFileChange}
+                      />
+                      <FormMessage>{uploadForm.formState.errors.archiveFile?.message?.toString()}</FormMessage>
+                    </FormItem>
+                    <FormItem>
+                      <FormLabel>CSV-файл</FormLabel>
+                      <Input type="file" accept=".csv" onChange={handleCsvFileChange} />
+                      <FormMessage>{uploadForm.formState.errors.csvFile?.message?.toString()}</FormMessage>
+                    </FormItem>
+                    {showColumnMapping && (
+                      <Card className="mt-4">
+                        <CardHeader><CardTitle>Сопоставление колонок CSV</CardTitle></CardHeader>
+                        <CardContent className="space-y-4">
+                          <p className="text-sm text-muted-foreground">Выберите, какие колонки из вашего CSV файла соответствуют имени файла изображения и названию вида. Геоданные и время будут извлечены из EXIF.</p>
+                          {[ 
+                            {label: 'Имя файла изображения', field: 'filename' as keyof typeof columnMappings},
+                            {label: 'Название вида', field: 'species' as keyof typeof columnMappings},
+                          ].map(mapItem => (
+                            <div key={mapItem.field} className="grid grid-cols-3 items-center gap-4">
+                              <Label>{mapItem.label}</Label>
+                              <Select 
+                                onValueChange={(value) => handleColumnMappingChange(mapItem.field, value)}
+                                value={columnMappings[mapItem.field]} 
+                                disabled={csvHeaders.length === 0 || isColumnMappingConfirmed}
+                              >
+                                <SelectTrigger className="col-span-2">
+                                  <SelectValue placeholder="Выберите колонку..." />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {csvHeaders.map(header => (
+                                    <SelectItem key={header} value={header}>{header}</SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            </div>
+                          ))}
+                          <Button onClick={handleConfirmColumnsAndCheckSpecies} disabled={isCheckingSpecies || !columnMappings.filename || !columnMappings.species || isColumnMappingConfirmed}>
+                            {isCheckingSpecies ? 'Проверка видов...' : 'Подтвердить колонки и проверить виды'}
+                          </Button>
+                        </CardContent>
+                      </Card>
+                    )}
+                    {showSpeciesMapping && (
+                      <Card className="mt-4">
+                        <CardHeader><CardTitle>Сопоставление видов</CardTitle></CardHeader>
+                        <CardContent className="space-y-4">
+                          <p className="text-sm text-muted-foreground">
+                            Следующие виды из вашего CSV-файла не найдены в базе данных. Пожалуйста, сопоставьте их или выберите "Создать новый вид".
+                          </p>
+                          {unmatchedSpecies.map(csvName => (
+                            <div key={csvName} className="grid grid-cols-3 items-center gap-4">
+                              <Label className="truncate" title={csvName}>{csvName}</Label>
+                              <Select 
+                                onValueChange={(value) => handleSpeciesMappingChange(csvName, value)}
+                                defaultValue={String(speciesUserMappings[csvName] || 'CREATE_NEW')}
+                              >
+                                <SelectTrigger className="col-span-2">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="CREATE_NEW">Создать новый вид: "{csvName}"</SelectItem>
+                                  {dbSpeciesForMapping.map(dbSp => (
+                                    <SelectItem key={dbSp.id} value={String(dbSp.id)}>{dbSp.name} (ID: {dbSp.id})</SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            </div>
+                          ))}
+                        </CardContent>
+                      </Card>
+                    )}
+                    <Button type="submit" disabled={isUploading || !isColumnMappingConfirmed} className="w-full">
+                      {isUploading ? 'Загрузка...' : 'Загрузить датасет'}
+                    </Button>
+                  </form>
+                </Form>
+              </CardContent>
+            </Card>
+
+            {/* 2. Deletion Operations Section */}
             <Card>
               <CardHeader>
                 <CardTitle>Операции удаления наблюдений</CardTitle>
                 <CardDescription>Удаление наблюдений по различным критериям.</CardDescription>
               </CardHeader>
-              <CardContent>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                  {/* Delete by Time Card */}
-                  <Card>
-                    <CardHeader>
-                        <CardTitle>Удалить по времени</CardTitle>
-                        <CardDescription>Удалить наблюдения в указанном диапазоне дат.</CardDescription>
-                    </CardHeader>
-                    <CardContent>
-                       <Form {...deleteTimeForm}>
-                           <form onSubmit={deleteTimeForm.handleSubmit(onDeleteByTime)} className="space-y-4">
-                                <FormField
-                                    control={deleteTimeForm.control}
-                                    name="dateRange"
-                                    render={({ field }) => (
-                                        <FormItem className="flex flex-col">
-                                            <FormLabel>Диапазон дат</FormLabel>
-                                            <FormDescription>
-                                                Выберите диапазон дат для удаления наблюдений.
-                                            </FormDescription>
-                                            <FormControl>
-                                                <DatePickerWithRangeAlternative
-                                                    value={field.value ? { from: field.value.from, to: field.value.to } : undefined}
-                                                    onValueChange={field.onChange}
-                                                    disabled={isDeleting}
-                                                    className="[&>button]:w-full"
-                                                />
-                                            </FormControl>
-                                            <FormMessage />
-                                        </FormItem>
-                                     )}
+              <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                {/* Delete by Time Card */}
+                <Card>
+                  <CardHeader><CardTitle>Удалить по времени</CardTitle></CardHeader>
+                  <CardContent>
+                    <Form {...deleteTimeForm}>
+                      <form onSubmit={deleteTimeForm.handleSubmit(onDeleteByTime)} className="space-y-4">
+                        <FormField 
+                          control={deleteTimeForm.control} 
+                          name="dateRange" 
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>Диапазон</FormLabel>
+                              <FormControl>
+                                <DatePickerWithRangeAlternative 
+                                  value={field.value?.from ? { from: field.value.from, to: field.value.to } : undefined} 
+                                  onValueChange={field.onChange} 
                                 />
-                                
-                                <Button type="submit" variant="destructive" disabled={isDeleting} className="w-full">
-                                    {isDeleting ? 'Удаление...' : <><Trash2 className="mr-2 h-4 w-4" /> Удалить по времени</>}
-                                </Button>
-                            </form>
-                        </Form>
-                    </CardContent>
-                  </Card>
-
-                  {/* Delete by Species Card */}
-                  <Card>
-                    <CardHeader>
-                        <CardTitle>Удалить по виду</CardTitle>
-                        <CardDescription>Удалить все наблюдения для выбранного вида.</CardDescription>
-                    </CardHeader>
-                    <CardContent>
-                       <Form {...deleteSpeciesForm}>
-                           <form onSubmit={deleteSpeciesForm.handleSubmit(onDeleteBySpecies)} className="space-y-4">
-                               <FormField
-                                   control={deleteSpeciesForm.control}
-                                   name="species_id"
-                                   render={({ field }) => (
-                                       <FormItem>
-                                           <FormLabel>Вид</FormLabel>
-                                           <Select
-                                                onValueChange={field.onChange}
-                                                defaultValue={field.value}
-                                                disabled={loadingSpecies || isDeleting}
-                                           >
-                                               <FormControl>
-                                                   <SelectTrigger>
-                                                       <SelectValue placeholder={loadingSpecies ? "Загрузка видов..." : "Выберите вид для удаления"} />
-                                                   </SelectTrigger>
-                                               </FormControl>
-                                               <SelectContent>
-                                                   {species.map(s => (
-                                                       <SelectItem key={s.id} value={String(s.id)}>
-                                                           {s.name}
-                                                       </SelectItem>
-                                                   ))}
-                                               </SelectContent>
-                                           </Select>
-                                           <FormMessage />
-                                       </FormItem>
-                                   )}
-                               />
-                                <Button type="submit" variant="destructive" disabled={isDeleting || loadingSpecies || !deleteSpeciesForm.formState.isValid} className="w-full">
-                                    {isDeleting ? 'Удаление...' : <><Trash2 className="mr-2 h-4 w-4" /> Удалить по виду</>}
-                                </Button>
-                           </form>
-                       </Form>
-                    </CardContent>
-                  </Card>
-
-                  {/* Delete by Area Card */}
-                  <Card className="md:col-span-3">
-                     <CardHeader>
-                         <CardTitle>Удалить по области</CardTitle>
-                         <CardDescription>Нарисуйте прямоугольник или полигон на карте, чтобы выбрать область для удаления наблюдений.</CardDescription>
-                     </CardHeader>
-                     <CardContent>
-                        <Form {...deleteAreaForm}>
-                             <form onSubmit={deleteAreaForm.handleSubmit(onDeleteByArea)} className="space-y-4">
-                                <FormField
-                                     control={deleteAreaForm.control}
-                                     name="area"
-                                     render={({ field }) => (
-                                         <FormItem>
-                                            <FormLabel>Карта области удаления</FormLabel>
-                                             <FormControl>
-                                                 <div style={{ height: '400px', width: '100%' }} className={`rounded-md border ${isDeleting ? 'opacity-50 cursor-not-allowed' : ''}`}>
-                                                    {/* Use new loading state and data for the map */}
-                                                    {(() => { /* IIFE for logging before render */
-                                                        console.log('[AdminPage] Rendering DeletionMapComponent. loadingAllMapData:', loadingAllMapData, 'allObservationMapData count:', allObservationMapData?.length); // DEBUG
-                                                        return loadingAllMapData ? (
-                                                            <p>Загрузка всех местоположений для карты...</p>
-                                                        ) : (
-                                                            <DeletionMapComponent
-                                                                locations={allObservationMapData} // Pass all map data
-                                                                selectedArea={field.value}
-                                                                onAreaSelect={field.onChange}
-                                                                disabled={isDeleting}
-                                                            />
-                                                        );
-                                                    })()}
-                                                 </div>
-                                             </FormControl>
-                                             <FormMessage />
-                                         </FormItem>
-                                     )}
-                                 />
-
-                                 <Button type="submit" variant="destructive" disabled={isDeleting || !deleteAreaForm.formState.isValid} className="w-full">
-                                     {isDeleting ? 'Удаление...' : <><Trash2 className="mr-2 h-4 w-4" /> Удалить по области</>}
-                                 </Button>
-                             </form>
-                         </Form>
-                    </CardContent>
-                  </Card>
-                </div>
+                              </FormControl>
+                              <FormMessage />
+                            </FormItem>
+                          )} 
+                        />
+                        <Button type="submit" variant="destructive" disabled={isDeleting}>Удалить</Button>
+                      </form>
+                    </Form>
+                  </CardContent>
+                </Card>
+                {/* Delete by Species Card */}
+                <Card>
+                  <CardHeader><CardTitle>Удалить по виду</CardTitle></CardHeader>
+                  <CardContent>
+                    <Form {...deleteSpeciesForm}>
+                      <form onSubmit={deleteSpeciesForm.handleSubmit(onDeleteBySpecies)} className="space-y-4">
+                        <FormField control={deleteSpeciesForm.control} name="species_id" render={({ field }) => (<FormItem><FormLabel>Вид</FormLabel><Select onValueChange={field.onChange} defaultValue={field.value}><FormControl><SelectTrigger><SelectValue placeholder="Выберите вид" /></SelectTrigger></FormControl><SelectContent>{species.map(s => (<SelectItem key={s.id} value={String(s.id)}>{s.name}</SelectItem>))}</SelectContent></Select><FormMessage /></FormItem>)} />
+                        <Button type="submit" variant="destructive" disabled={isDeleting}>Удалить</Button>
+                      </form>
+                    </Form>
+                  </CardContent>
+                </Card>
+                {/* Delete by Area Card (Full Width on Medium Screens) */}
+                <Card className="md:col-span-3">
+                  <CardHeader><CardTitle>Удалить по области</CardTitle></CardHeader>
+                  <CardContent>
+                    <Form {...deleteAreaForm}>
+                      <form onSubmit={deleteAreaForm.handleSubmit(onDeleteByArea)} className="space-y-4">
+                        <FormField control={deleteAreaForm.control} name="area" render={({ field }) => (<FormItem><FormLabel>Карта</FormLabel><FormControl><div style={{ height: '300px' }}> <DeletionMapComponent locations={allObservationMapData} selectedArea={field.value} onAreaSelect={field.onChange} disabled={isDeleting} /> </div></FormControl><FormMessage /></FormItem>)} />
+                        <Button type="submit" variant="destructive" disabled={isDeleting}>Удалить</Button>
+                      </form>
+                    </Form>
+                  </CardContent>
+                </Card>
               </CardContent>
             </Card>
-
-            {/* Section for Observation List, Filtering, Pagination, and Editing */}
+            
+            {/* 3. Observation List Section */}
             <Card>
               <CardHeader>
                 <CardTitle>Список наблюдений</CardTitle>
-                <CardDescription>Просмотр, фильтрация и редактирование существующих наблюдений.</CardDescription>
+                <CardDescription>Просмотр, фильтрация и редактирование.</CardDescription>
               </CardHeader>
               <CardContent>
                 {/* Filtering UI */}
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
-                  <Select 
-                    onValueChange={(value) => {
-                      setFilterSpecies(value);
-                      setCurrentPage(1);
-                    }} 
-                    value={filterSpecies}
-                  >
+                  <Select onValueChange={(value) => { setFilterSpecies(value); setCurrentPage(1); }} value={filterSpecies}>
                     <SelectTrigger><SelectValue placeholder="Фильтр по виду" /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value={ALL_SPECIES_FILTER_VALUE}>Все виды</SelectItem>
-                      {species.map(s => <SelectItem key={s.id} value={s.id.toString()}>{s.name}</SelectItem>)}
+                      {species.map(s => <SelectItem key={s.id} value={String(s.id)}>{s.name}</SelectItem>)}
                     </SelectContent>
                   </Select>
-                  <DatePickerWithRangeAlternative 
-                    value={filterTimestamp} 
-                    onValueChange={(range?: DateRange) => {
-                      setFilterTimestamp(range);
-                      setCurrentPage(1);
-                    }}
-                    className="w-full"
-                  />
-                  <div className="space-y-2">
+                  <DatePickerWithRangeAlternative value={filterTimestamp} onValueChange={(range) => { setFilterTimestamp(range); setCurrentPage(1); }} />
+                  <div>
                     <Label htmlFor="confidence-slider">Уверенность (мин.): {(filterConfidence * 100).toFixed(0)}%</Label>
-                    <Input 
-                      type="range"
-                      id="confidence-slider"
-                      min="0"
-                      max="1"
-                      step="0.01"
-                      value={filterConfidence}
-                      onChange={(e) => {
-                        setFilterConfidence(parseFloat(e.target.value));
-                        setCurrentPage(1);
-                      }}
-                      className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer dark:bg-gray-700"
-                    />
+                    <Input type="range" id="confidence-slider" min="0" max="1" step="0.01" value={filterConfidence} onChange={(e) => { setFilterConfidence(parseFloat(e.target.value)); setCurrentPage(1);}} />
                   </div>
                 </div>
 
-                {/* Observation Table Wrapper to stabilize height */}
-                <div style={{ minHeight: '400px' }}>
-                  {loadingFilteredObservations ? ( // Use renamed state
-                    <p>Загрузка наблюдений...</p>
-                  ) : observationLocations.length > 0 ? (
-                    <>
-                      <Table>
-                        <TableHeader>
-                          <TableRow>
-                            <TableHead>ID</TableHead>
-                            <TableHead>Фото</TableHead>
-                            <TableHead>Вид</TableHead>
-                            <TableHead>Уверенность</TableHead>
-                            <TableHead>Дата</TableHead>
-                            <TableHead>Местоположение</TableHead>
-                            <TableHead>Действия</TableHead>
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {observationLocations.map((obs) => {
-                            const confidenceText = obs.classification_confidence !== null && obs.classification_confidence !== undefined
-                              ? `${(obs.classification_confidence * 100).toFixed(1)}%`
-                              : 'N/A';
-                            const imageElement = obs.image_url ? (
-                              <img 
-                                src={obs.image_url} 
-                                alt={`Obs ${obs.id}`} 
-                                className="h-12 w-16 object-cover rounded border"
-                              /> 
-                            ) : (
-                              <div className="h-12 w-16 flex items-center justify-center text-xs text-muted-foreground border rounded bg-slate-50">
-                                (Нет фото)
-                              </div>
-                            );
-                            return (
-                              <TableRow key={obs.id}>
-                                <TableCell>{obs.id}</TableCell>
-                                <TableCell>{imageElement}</TableCell>
-                                <TableCell>{obs.species.name}</TableCell>
-                                <TableCell>{confidenceText}</TableCell>
-                                <TableCell>{new Date(obs.timestamp).toLocaleString()}</TableCell>
-                                <TableCell>
-                                  {obs.location ? `${obs.location.coordinates[1].toFixed(4)}, ${obs.location.coordinates[0].toFixed(4)}` : 'N/A'}
-                                </TableCell>
-                                <TableCell className="space-x-2">
-                                  <Button variant="outline" size="sm" onClick={() => handleEditClick(obs)} disabled={isDeleting}>
-                                    <Pencil className="h-4 w-4 mr-1" /> Редактировать
-                                  </Button>
-                                  <Button variant="destructive" size="sm" onClick={() => handleDeleteObservationClick(obs)} disabled={isDeleting}>
-                                    <Trash2 className="h-4 w-4 mr-1" /> Удалить
-                                  </Button>
-                                </TableCell>
-                              </TableRow>
-                            );
-                          })}
-                        </TableBody>
-                      </Table>
-                      {/* Pagination UI */}
-                      <div className="flex justify-between items-center mt-4">
-                        <Button 
-                          onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))} 
-                          disabled={currentPage === 1 || loadingFilteredObservations}
-                        >
-                          Назад
-                        </Button>
-                        
-                        {/* New Pagination Component/Logic Start */}
-                        <div className="flex items-center space-x-1">
-                          {(() => {
-                            const pageNumbers = [];
-                            const maxPagesToShow = 7; // Like in your image
-                            const halfMaxPages = Math.floor(maxPagesToShow / 2);
-
-                            if (totalPages <= maxPagesToShow) {
-                              for (let i = 1; i <= totalPages; i++) {
-                                pageNumbers.push(i);
-                              }
-                            } else {
-                              // Always show first page
-                              pageNumbers.push(1);
-                              if (currentPage > halfMaxPages + 1 && totalPages > maxPagesToShow) {
-                                  pageNumbers.push('...'); // Ellipsis after first page
-                              }
-
-                              let startPage = Math.max(2, currentPage - halfMaxPages + (currentPage > totalPages - halfMaxPages ? totalPages - currentPage - halfMaxPages +1 : 1 ));
-                              let endPage = Math.min(totalPages - 1, currentPage + halfMaxPages - (currentPage < halfMaxPages +1 ? currentPage - halfMaxPages : -1));
-
-                              // Adjust startPage and endPage to ensure maxPagesToShow buttons (minus first/last and ellipses)
-                              const innerPagesCount = maxPagesToShow - 2; // for first, last
-                              if (currentPage <= halfMaxPages) {
-                                  endPage = Math.min(totalPages -1, maxPagesToShow-1 ); 
-                              } else if (currentPage >= totalPages - halfMaxPages) {
-                                  startPage = Math.max(2, totalPages - maxPagesToShow +2);
-                              } else {
-                                  startPage = currentPage - Math.floor((innerPagesCount-1)/2) ;
-                                  endPage = currentPage + Math.ceil((innerPagesCount-1)/2);
-                              }
-                              
-                              // Ensure we don't go below 2 for start and above totalPages-1 for end for the middle block
-                              startPage = Math.max(2, startPage);
-                              endPage = Math.min(totalPages - 1, endPage);
-
-                              for (let i = startPage; i <= endPage; i++) {
-                                  pageNumbers.push(i);
-                              }
-
-                              if (currentPage < totalPages - halfMaxPages && totalPages > maxPagesToShow) {
-                                  pageNumbers.push('...'); // Ellipsis before last page
-                              }
-                              // Always show last page
-                              pageNumbers.push(totalPages);
-                            }
-
-                            return pageNumbers.map((num, index) => (
-                              <Button
-                                key={`${num}-${index}`}
-                                variant={num === currentPage ? 'default' : 'outline'}
-                                size="sm"
-                                onClick={() => typeof num === 'number' && setCurrentPage(num)}
-                                disabled={num === '...' || loadingFilteredObservations}
-                                className={`h-9 w-9 p-0 ${num === '...' ? 'cursor-default' : ''}`}
-                              >
-                                {num}
-                              </Button>
-                            ));
-                          })()}
-                        </div>
-                        {/* New Pagination Component/Logic End */}
-
-                        <Button 
-                          onClick={() => {
-                            if (currentPage < totalPages) {
-                               setCurrentPage(prev => prev + 1)
-                            }
-                          }}
-                          disabled={loadingFilteredObservations || currentPage === totalPages || totalPages === 0}
-                        >
-                          Вперед
-                        </Button>
-                      </div>
-                    </>
-                  ) : (
-                    <p>Нет наблюдений для отображения с текущими фильтрами.</p>
-                  )}
-                </div>
+                {/* Observation Table */}
+                <ObservationTable 
+                  observations={observationLocations}
+                  speciesList={species} // Pass species list for the edit modal
+                  isLoading={loadingFilteredObservations}
+                  currentPage={currentPage}
+                  totalPages={totalPages}
+                  onPageChange={setCurrentPage}
+                  onEdit={handleEditClick}
+                  onDelete={handleDeleteObservationClick}
+                />
               </CardContent>
             </Card>
-
-            {/* EditObservationModal (remains structurally part of this section) */}
-            <EditObservationModal
-               isOpen={isEditingModalOpen}
-               onClose={handleCloseEditModal}
-               onSave={handleSaveEdit}
-               observation={selectedObservation}
-               speciesList={species}
-               isLoading={isDeleting} 
-            />
           </div>
         </TabsContent>
+
+        {/* User Management Tab */}
+        <TabsContent value="user-management">
+          <UserManagementTab />
+        </TabsContent>
+
+        {/* System Statistics Tab */}
+        <TabsContent value="system-statistics">
+          <SystemStatisticsTab />
+        </TabsContent>
+
       </Tabs>
+
+      {/* EditObservationModal (remains at the component level) */}
+      {selectedObservation && (
+        <EditObservationModal
+          isOpen={isEditingModalOpen}
+          onClose={handleCloseEditModal}
+          onSave={handleSaveEdit}
+          observation={selectedObservation}
+          speciesList={species}
+          isLoading={isDeleting} 
+        />
+      )}
     </div>
   );
 }

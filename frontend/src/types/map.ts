@@ -6,7 +6,7 @@ import L from 'leaflet';
 export interface Species {
   id: number;
   name: string;
-  description?: string;
+  description?: string | null;
 }
 
 /** Точка сетки для KDE/перекрытий */

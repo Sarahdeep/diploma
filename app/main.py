@@ -3,7 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.exc import OperationalError
 from database import engine, Base
 from models import User, Species, Observation, HabitatArea
-from endpoints import species, observations, habitats
+from endpoints import species, observations, habitats, admin, users
+from endpoints import analysis as analysis_router
 from auth import router as auth_router
 from minio_client import ensure_buckets_exist
 
@@ -21,14 +22,18 @@ app = FastAPI(
     * 📸 Observation recording (via image upload with EXIF extraction)
     * 🗺️ Habitat area calculation (MCP, KDE)
     * 📈 Retrieval of observations and calculated habitats for visualization
+    * 👥 User management and administration
     
     ## API Structure
     
     The API is organized into the following modules:
     * **auth**: User authentication and registration
+    * **users**: User profile management and statistics
+    * **admin**: User management and system administration
     * **species**: Managing species information
     * **observations**: Creating and retrieving individual observations
     * **habitats**: Triggering and retrieving habitat area calculations
+    * **analysis**: Analyzing habitat data
     """,
     version="0.2.0",
     contact={
@@ -51,9 +56,12 @@ app.add_middleware(
 API_PREFIX = "/api/v1"
 
 app.include_router(auth_router, prefix=f"{API_PREFIX}/auth", tags=["Authentication"])
+app.include_router(users.router, prefix=f"{API_PREFIX}/users", tags=["Users"])
+app.include_router(admin.router, prefix=f"{API_PREFIX}/admin", tags=["Admin"])
 app.include_router(species.router, prefix=f"{API_PREFIX}/species", tags=["Species"])
 app.include_router(observations.router, prefix=f"{API_PREFIX}/observations", tags=["Observations"])
 app.include_router(habitats.router, prefix=f"{API_PREFIX}/habitats", tags=["Habitats"])
+app.include_router(analysis_router.router, prefix=f"{API_PREFIX}/analysis", tags=["Analysis"])
 
 @app.on_event("startup")
 async def startup_event():

@@ -2,6 +2,8 @@
 import React from 'react';
 import { DatePicker } from 'antd';
 import type { RangePickerProps } from 'antd/es/date-picker';
+import dayjs from 'dayjs';
+import type { Dayjs } from 'dayjs';
 
 const { RangePicker } = DatePicker;
 
@@ -13,18 +15,22 @@ interface DateRangeSelectorProps {
 /**
  * Компонент для выбора диапазона дат
  */
-const DateRangeSelector: React.FC<DateRangeSelectorProps> = ({ value, onChange }) => (
-  <div style={{ marginBottom: 16 }}>
-    <label htmlFor="date-range-picker" style={{ display: 'block', marginBottom: 4 }}>
-      Период наблюдений:
-    </label>
-    <RangePicker
-      id="date-range-picker"
-      value={value as any}
-      onChange={onChange}
-      style={{ width: '100%' }}
-    />
-  </div>
-);
+const DateRangeSelector: React.FC<DateRangeSelectorProps> = ({ value, onChange }) => {
+  const antDValue: [Dayjs | null, Dayjs | null] | null = value ? [value[0] ? dayjs(value[0]) : null, value[1] ? dayjs(value[1]) : null] : null;
+
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <label htmlFor="date-range-picker" style={{ display: 'block', marginBottom: 4 }}>
+        Период наблюдений:
+      </label>
+      <RangePicker
+        id="date-range-picker"
+        value={antDValue as RangePickerProps['value']}
+        onChange={onChange}
+        style={{ width: '100%' }}
+      />
+    </div>
+  );
+};
 
 export default DateRangeSelector;

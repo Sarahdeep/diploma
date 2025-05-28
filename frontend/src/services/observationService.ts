@@ -1,126 +1,83 @@
-import { API_BASE_URL } from './apiConfig';
-import type { ObservationRead, ObservationUpdate, ObservationFilterParams, ObservationListResponse } from '../types/api';
-
-// Placeholder for token retrieval - reuse or centralize
-const getAuthToken = (): string | null => {
-  // console.warn('(observationService) getAuthToken() is a placeholder. Implement token retrieval.');
-  // return null;
-  return localStorage.getItem('authToken');
-};
-
-const handleResponse = async (response: Response) => {
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({ detail: response.statusText }));
-    throw new Error(errorData.detail || 'An unknown error occurred');
-  }
-  if (response.status === 204) {
-    return null;
-  }
-  return response.json();
-};
+import { apiClient } from './apiClient'; // Import apiClient
+import type { ObservationRead, ObservationUpdate, ObservationFilterParams, ObservationListResponse, StandardResponseMessage } from '../types/api';
 
 export const observationService = {
   // Create observation involves FormData
-  async createObservation(formData: FormData): Promise<ObservationRead> {
-    // const token = getAuthToken(); // Auth removed
-    const response = await fetch(`${API_BASE_URL}/observations/`, {
-      method: 'POST',
-      // headers: { // Auth removed
-      //   // 'Content-Type': 'multipart/form-data' is set automatically by browser with FormData
-      //   'Authorization': `Bearer ${token}`,
-      // },
-      body: formData,
+  async createObservation(formData: FormData): Promise<ObservationRead[]> {
+    // apiClient's interceptor will handle Authorization header.
+    // Content-Type for FormData is typically set by the browser/axios automatically.
+    const response = await apiClient.post<ObservationRead[]>('/observations/', formData, {
+      headers: {
+        // Overriding Content-Type can be problematic with FormData; let axios handle it.
+        // 'Content-Type': 'multipart/form-data', // Let axios set this
+      }
     });
-    return handleResponse(response);
+    return response.data;
   },
 
   async getAllObservations(filters?: ObservationFilterParams, skip: number = 0, limit: number = 100): Promise<ObservationListResponse> {
-    // const token = getAuthToken(); // Auth removed
-    let queryParams = `skip=${skip}&limit=${limit}`;
-    if (filters) {
-      Object.entries(filters).forEach(([key, value]) => {
-        if (value !== undefined && value !== null) {
-          queryParams += `&${key}=${encodeURIComponent(String(value))}`;
-        }
-      });
-    }
+    const params: Record<string, string | number | boolean> = { skip, limit };
 
-    const response = await fetch(`${API_BASE_URL}/observations/?${queryParams}`, {
-      // headers: { // Auth removed
-      //   // 'Authorization': `Bearer ${token}`, // Uncomment if GET requires auth
-      //   ...(token && { 'Authorization': `Bearer ${token}` }),
-      // },
-    });
-    return handleResponse(response);
+    if (filters) {
+      for (const [key, value] of Object.entries(filters)) {
+        if (value !== undefined && value !== null) {
+          // Ensure all potential value types from ObservationFilterParams are converted to string for URLSearchParams
+          params[key] = String(value);
+        }
+      }
+    }
+    // apiClient's interceptor will handle Authorization header.
+    const response = await apiClient.get<ObservationListResponse>('/observations/', { params });
+    return response.data;
+  },
+
+  async getUserObservations(skip: number = 0, limit: number = 100): Promise<ObservationListResponse> {
+    const params: Record<string, string | number> = { skip, limit };
+    // apiClient's interceptor will handle Authorization header for /me routes
+    const response = await apiClient.get<ObservationListResponse>('/users/me/observations', { params });
+    return response.data;
   },
 
   async getObservationById(observationId: number): Promise<ObservationRead> {
-    // const token = getAuthToken(); // Auth removed
-    const response = await fetch(`${API_BASE_URL}/observations/${observationId}`, {
-      // headers: { // Auth removed
-      //   // 'Authorization': `Bearer ${token}`, // Uncomment if GET requires auth
-      //   ...(token && { 'Authorization': `Bearer ${token}` }),
-      // },
-    });
-    return handleResponse(response);
+    // apiClient's interceptor will handle Authorization header.
+    const response = await apiClient.get<ObservationRead>(`/observations/${observationId}`);
+    return response.data;
   },
 
   async updateObservation(observationId: number, observationData: ObservationUpdate): Promise<ObservationRead> {
-    // const token = getAuthToken(); // Auth removed
-    const response = await fetch(`${API_BASE_URL}/observations/${observationId}`, {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        // 'Authorization': `Bearer ${token}`, // Auth removed
-      },
-      body: JSON.stringify(observationData),
-    });
-    return handleResponse(response);
+    // apiClient's interceptor will handle Authorization header.
+    const response = await apiClient.put<ObservationRead>(`/observations/${observationId}`, observationData);
+    return response.data;
   },
 
-  async deleteObservation(observationId: number): Promise<ObservationRead | null> { // Backend returns deleted observation
-    // const token = getAuthToken(); // Auth removed
-    const response = await fetch(`${API_BASE_URL}/observations/${observationId}`, {
-      method: 'DELETE',
-      // headers: { // Auth removed
-      //   'Authorization': `Bearer ${token}`,
-      // },
-    });
-    return handleResponse(response);
+  async deleteObservation(observationId: number): Promise<ObservationRead | null> {
+    // apiClient's interceptor will handle Authorization header.
+    const response = await apiClient.delete<ObservationRead>(`/observations/${observationId}`);
+    // For 204 No Content, axios might return undefined or null in response.data.
+    // Depending on backend, it might return the deleted object or nothing.
+    // The original code expected null for 204.
+    return response.data; // Assuming backend returns the deleted object or axios handles 204 appropriately
   },
 
-  async deleteObservationsByArea(area: object): Promise<{ message: string, deleted_count: number } | null> {
-    // const token = getAuthToken(); // Auth removed for now
-    const response = await fetch(`${API_BASE_URL}/observations/delete_by_area`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        // ...(token && { 'Authorization': `Bearer ${token}` }),
-      },
-      body: JSON.stringify({ area }), // Send the area GeoJSON in the body
-    });
-    return handleResponse(response);
+  async deleteObservationsByArea(area: object): Promise<StandardResponseMessage> {
+    // apiClient's interceptor will handle Authorization header.
+    const response = await apiClient.post<StandardResponseMessage>('/observations/delete_by_area', { area });
+    return response.data;
   },
 
-  async deleteObservationsBySpecies(speciesId: number): Promise<{ message: string, deleted_count: number } | null> {
-    // const token = getAuthToken(); // Auth removed
-    const response = await fetch(`${API_BASE_URL}/observations/by_species/${speciesId}`, {
-      method: 'DELETE',
-      // headers: { // Auth removed
-      //   // ...(token && { 'Authorization': `Bearer ${token}` }),
-      // },
-    });
-    return handleResponse(response);
+  async deleteObservationsBySpecies(speciesId: number): Promise<StandardResponseMessage> {
+    // apiClient's interceptor will handle Authorization header.
+    const response = await apiClient.delete<StandardResponseMessage>(`/observations/by_species/${speciesId}`);
+    return response.data;
   },
 
-  async deleteObservationsByTimeRange(startDate: string, endDate: string): Promise<{ message: string, deleted_count: number } | null> {
-    // const token = getAuthToken(); // Auth removed
-    const response = await fetch(`${API_BASE_URL}/observations/by_time_range?delete_op_start_date=${encodeURIComponent(startDate)}&delete_op_end_date=${encodeURIComponent(endDate)}`, {
-      method: 'DELETE',
-      // headers: { // Auth removed
-      //   // ...(token && { 'Authorization': `Bearer ${token}` }),
-      // },
-    });
-    return handleResponse(response);
+  async deleteObservationsByTimeRange(startDate: string, endDate: string): Promise<StandardResponseMessage> {
+    // apiClient's interceptor will handle Authorization header.
+    const params = {
+      delete_op_start_date: startDate,
+      delete_op_end_date: endDate,
+    };
+    const response = await apiClient.delete<StandardResponseMessage>('/observations/by_time_range', { params });
+    return response.data;
   },
 }; 

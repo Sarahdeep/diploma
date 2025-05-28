@@ -14,7 +14,7 @@ from geojson import Feature as GeoJSONFeature # Используем для со
 
 router = APIRouter(
     tags=["Habitats"],
-    # dependencies=[Depends(auth.get_current_active_user)] # Аутентификация пока убрана для простоты
+    dependencies=[Depends(auth.get_current_active_user)]
 )
 
 # --- Helper function to get observations --- (можно вынести в отдельный модуль utils)
@@ -118,7 +118,7 @@ async def trigger_habitat_calculation_and_save(
     request_params: schemas.HabitatAreaCalculationRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    # current_user: models.User = Depends(auth.get_current_active_user) # Если нужна аутентификация
+    current_user: models.User = Depends(auth.get_current_active_user)
 ):
     """Triggers the calculation and SAVING of a habitat area (MCP or KDE). Runs in the background."""
     if method.lower() not in ["mcp", "kde"]:

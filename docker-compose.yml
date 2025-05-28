@@ -22,6 +22,26 @@ services:
       - MINIO_SECRET_KEY=minioadmin
       - MINIO_SECURE=False
 
+  celery_worker: # New service for the Celery worker
+    build: .
+    command: sh -c "celery -A celery_app.celery worker -l info -I celery_tasks.ml_tasks"
+    volumes:
+      - ./app:/app
+    environment:
+      - SECRET_KEY=super_secret_and_long_enough_key_for_dev_PLEASE_CHANGE
+      - DATABASE_URL=postgresql://user:password@db:5432/mydb
+      - REDIS_URL=redis://redis:6379 # Corrected port to 6379
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_PUBLIC_URL=http://localhost:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - MINIO_SECURE=False
+      - PYTHONPATH=/app # Explicitly set PYTHONPATH
+    depends_on:
+      - db
+      - redis
+      - minio
+
   db:
     image: postgis/postgis:13-3.3
     environment:

@@ -16,67 +16,148 @@ import os
 import pandas as pd
 import zipfile
 from urllib.parse import urlparse
+from models import UserRole # Assuming UserRole is in models
+from middleware.auth import admin_required # Import admin_required
+from celery_tasks.ml_tasks import classify_observation_image, trigger_model_retraining # Added trigger_model_retraining
 
 router = APIRouter(
     tags=["Observations"],
+    dependencies=[Depends(auth.get_current_active_user)],
 )
 
-@router.post("/", response_model=schemas.ObservationRead, status_code=status.HTTP_201_CREATED)
+@router.post("/", response_model=List[schemas.ObservationRead], status_code=status.HTTP_201_CREATED)
 async def create_observation(
-    species_id: int = Form(...),
-    file: UploadFile = File(...),
+    species_id: Optional[int] = Form(None),
+    files: List[UploadFile] = File(...),
+    timestamp: Optional[str] = Form(None),
+    latitude: Optional[float] = Form(None),
+    longitude: Optional[float] = Form(None),
     db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_active_user)
 ):
-    db_species = db.query(models.Species).filter(models.Species.id == species_id).first()
-    if not db_species:
-        raise HTTPException(status_code=404, detail=f"Species with id {species_id} not found")
+    created_observations = []
+    for file in files:
+        content = await file.read()
+        # Reset file pointer for MinIO upload after reading for EXIF
+        await file.seek(0)
+        
+        gps_info = extract_gps_datetime(content)
 
-    content = await file.read() 
-    gps_info = extract_gps_datetime(content) 
-    if not gps_info or gps_info.get('latitude') is None or gps_info.get('longitude') is None:
-        raise HTTPException(status_code=400, detail="Could not extract valid GPS coordinates from image EXIF data.")
+        current_latitude = latitude
+        current_longitude = longitude
+        current_timestamp_str = timestamp
 
-    try:
-        file_extension = os.path.splitext(file.filename)[1] if file.filename else '.jpg'
-        object_name_for_minio = f"user_placeholder/{species_id}/{uuid.uuid4()}{file_extension}"
+        # If coordinates not provided in form, try to get from EXIF for this specific file
+        if current_latitude is None or current_longitude is None:
+            if gps_info and gps_info.get('latitude') is not None and gps_info.get('longitude') is not None:
+                current_latitude = gps_info['latitude']
+                current_longitude = gps_info['longitude']
+            # else: # Removed the skip condition
+                # print(f"Skipping file {file.filename}: Could not extract GPS coordinates from EXIF and not provided in form.")
+                # continue # Skip to the next file
+        
+        # Set default coordinates if still None
+        if current_latitude is None:
+            current_latitude = 0.0 # Default latitude
+            print(f"File {file.filename}: Latitude not found, using default: {current_latitude}")
+        if current_longitude is None:
+            current_longitude = 0.0 # Default longitude
+            print(f"File {file.filename}: Longitude not found, using default: {current_longitude}")
 
-        file.file.seek(0) 
-        minio_client.put_object(
-            OBSERVATIONS_BUCKET,
-            object_name_for_minio,
-            file.file, 
-            length=file.size,
-            content_type=file.content_type
-        )
+        # If timestamp not provided in form, try to get from EXIF for this specific file
+        if current_timestamp_str is None:
+            if gps_info and gps_info.get('timestamp'):
+                # gps_info['timestamp'] is already a datetime object if successfully extracted
+                observation_dt = gps_info['timestamp']
+            else:
+                observation_dt = datetime.now(timezone.utc)
+        else:
+            try:
+                observation_dt = datetime.fromisoformat(current_timestamp_str.replace('Z', '+00:00'))
+            except ValueError:
+                print(f"Skipping file {file.filename}: Invalid timestamp format provided in form.")
+                continue # Skip to the next file
 
-    except Exception as e:
-        print(f"Error uploading to MinIO: {e}")
-        raise HTTPException(status_code=500, detail="Failed to upload image to storage.")
+        current_species_id = species_id
+        classification_confidence_val = None
+        is_verified_val = False # Default to False
 
-    point_geom = ShapelyPoint(gps_info['longitude'], gps_info['latitude'])
-    wkt_point = f'SRID=4326;{point_geom.wkt}' 
+        # Ensure species_id exists if provided
+        if current_species_id is not None:
+            db_species = db.query(models.Species).filter(models.Species.id == current_species_id).first()
+            if not db_species:
+                print(f"Skipping file {file.filename}: Species ID {current_species_id} not found.")
+                continue # Skip to the next file
+            # If species ID is valid and provided by user, it's considered verified with 100% confidence
+            is_verified_val = True
+            classification_confidence_val = 1.0
+            # Also trigger retraining if user provides species_id, as it implies new verified data
+            # However, create_observation can create multiple observations. 
+            # Triggering retraining for each might be excessive. 
+            # Better to trigger once after all files in this request are processed if any were verified this way.
+            # This will be handled after the loop.
 
-    new_observation = models.Observation(
-        location=wkt_point, 
-        species_id=species_id,
-        timestamp=gps_info.get('timestamp') or datetime.now(timezone.utc), 
-        image_url=object_name_for_minio,
-        source='image_upload',
-        user_id=None
-    )
+        try:
+            loop_filename = file.filename if file.filename else "image.jpg"
+            # Construct object_name without species_id if it's None
+            species_path_part = str(current_species_id) if current_species_id is not None else "unclassified"
+            loop_file_extension = os.path.splitext(loop_filename)[1] if os.path.splitext(loop_filename)[1] else '.jpg'
+            object_name_for_minio = f"users/{current_user.id}/observations/{species_path_part}/{uuid.uuid4()}{loop_file_extension}"
 
-    db.add(new_observation)
-    db.commit()
-    db.refresh(new_observation)
-    
-    pydantic_obs_response = schemas.ObservationRead.from_orm(new_observation)
-    
-    if new_observation.image_url:
-        pydantic_obs_response.image_url = get_minio_url(OBSERVATIONS_BUCKET, new_observation.image_url)
-    else:
-        pydantic_obs_response.image_url = None
+            if file.file is None: # Should not happen with UploadFile items from a list
+                print(f"Skipping file {loop_filename}: File object is missing.")
+                continue
             
-    return pydantic_obs_response
+            # Ensure file.file is the SpooledTemporaryFile itself
+            # For multiple files, 'file' is an UploadFile instance, and file.file is its SpooledTemporaryFile.
+            minio_client.put_object(
+                OBSERVATIONS_BUCKET,
+                object_name_for_minio,
+                file.file, # Pass the file-like object
+                length=file.size, # Use the size of the current file in the loop
+                content_type=file.content_type
+            )
+        except Exception as e:
+            print(f"Error uploading file {file.filename} to MinIO: {e}")
+            continue # Skip to the next file
+
+        point_geom = ShapelyPoint(current_longitude, current_latitude)
+        wkt_point = f'SRID=4326;{point_geom.wkt}'
+
+        new_observation = models.Observation(
+            location=wkt_point,
+            species_id=current_species_id,
+            timestamp=observation_dt,
+            image_url=object_name_for_minio,
+            source='image_upload',
+            user_id=current_user.id,
+            classification_confidence=classification_confidence_val,
+            is_verified=is_verified_val # Set is_verified status
+        )
+        db.add(new_observation)
+        db.commit()
+        db.refresh(new_observation)
+        
+        # Trigger classification if species_id was not provided and image exists
+        if new_observation.species_id is None and new_observation.image_url:
+            print(f"Observation ID {new_observation.id} created without species. Triggering classification task.")
+            classify_observation_image.delay(
+                observation_id=new_observation.id,
+                image_minio_bucket=OBSERVATIONS_BUCKET,
+                image_minio_object_name=new_observation.image_url
+            )
+        
+        pydantic_obs_response = schemas.ObservationRead.from_orm(new_observation)
+        if new_observation.image_url:
+            pydantic_obs_response.image_url = get_minio_url(OBSERVATIONS_BUCKET, new_observation.image_url)
+        
+        created_observations.append(pydantic_obs_response)
+
+    if not created_observations:
+        # This condition might still be hit if ALL files fail for other reasons (e.g. MinIO upload, species_id not found when provided)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No observations were created. Check file details and logs for other errors.")
+            
+    return created_observations
 
 @router.get("/", response_model=schemas.ObservationListResponse)
 async def read_observations(
@@ -89,7 +170,8 @@ async def read_observations(
     max_lon: Optional[float] = Query(None, description="Maximum longitude for BBOX filter"),
     skip: int = 0, 
     limit: int = 100, 
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_active_user)
 ):
     query = db.query(models.Observation)
     count_query = db.query(sql_func.count(models.Observation.id))
@@ -143,7 +225,7 @@ async def read_observations(
     return schemas.ObservationListResponse(observations=response_observations, total_count=total_count)
 
 @router.get("/{observation_id}", response_model=schemas.ObservationRead)
-async def read_observation_by_id(observation_id: int, db: Session = Depends(get_db)):
+async def read_observation_by_id(observation_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(auth.get_current_active_user)):
     db_observation = db.query(models.Observation).filter(models.Observation.id == observation_id).first()
     if db_observation is None:
         raise HTTPException(status_code=404, detail="Observation not found")
@@ -160,9 +242,9 @@ async def read_observation_by_id(observation_id: int, db: Session = Depends(get_
 @router.put("/{observation_id}", response_model=schemas.ObservationRead)
 async def update_observation(
     observation_id: int,
-    obs_update: schemas.ObservationCreate,
+    obs_update: schemas.ObservationUpdate,
     db: Session = Depends(get_db),
-    # current_user: models.User = Depends(auth.get_current_active_user) # Auth removed
+    current_user: models.User = Depends(auth.get_current_active_user)
 ):
     db_observation = db.query(models.Observation).filter(models.Observation.id == observation_id).first()
     if db_observation is None:
@@ -173,10 +255,21 @@ async def update_observation(
     if "latitude" in update_data and "longitude" in update_data:
         point_geom = ShapelyPoint(update_data["longitude"], update_data["latitude"])
         db_observation.location = f'SRID=4326;{point_geom.wkt}'
-        del update_data["latitude"]
-        del update_data["longitude"]
-    elif "latitude" in update_data or "longitude" in update_data:
-        raise HTTPException(status_code=400, detail="Both latitude and longitude must be provided to update location.")
+        # Remove lat/lon from update_data as they are handled separately by location
+        if "latitude" in update_data: del update_data["latitude"]
+        if "longitude" in update_data: del update_data["longitude"]
+
+    species_id_updated = False
+    if "species_id" in update_data:
+        if db_observation.species_id != update_data["species_id"]:
+            species_id_updated = True
+        # Ensure the new species_id is valid if it's not None
+        if update_data["species_id"] is not None:
+            db_species = db.query(models.Species).filter(models.Species.id == update_data["species_id"]).first()
+            if not db_species:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Species ID {update_data['species_id']} not found.")
+        db_observation.is_verified = True # User is manually setting/confirming species
+        db_observation.classification_confidence = 1.0 # Set confidence to 100%
 
     for key, value in update_data.items():
         setattr(db_observation, key, value)
@@ -359,7 +452,8 @@ def process_dataset_upload_task(
     archive_content: bytes,
     species_map_str: str,
     filename_column_name: str,
-    species_column_name: str
+    species_column_name: str,
+    uploader_user_id: Optional[int] = None # Added uploader_user_id
 ):
     db = db_session_factory()
     try:
@@ -473,7 +567,9 @@ def process_dataset_upload_task(
                         timestamp=observation_timestamp,
                         image_url=minio_object_name_for_storage, # Store only the object_name in DB
                         source='batch_upload_exif_geo_time', 
-                        user_id=None
+                        user_id=uploader_user_id, # Use the passed uploader_user_id
+                        is_verified=True, # Observations from admin bulk upload are auto-verified
+                        classification_confidence=1.0 # Set confidence to 100% for verified uploads
                     )
                     db.add(new_observation)
                     processed_count += 1
@@ -496,8 +592,10 @@ def process_dataset_upload_task(
         db.close()
 
 @router.post("/upload_dataset", status_code=status.HTTP_202_ACCEPTED)
+@admin_required() # Added admin protection
 async def upload_dataset_endpoint(
     background_tasks: BackgroundTasks,
+    current_user: models.User = Depends(auth.get_current_active_user), # Get current user
     archive: UploadFile = File(..., description="ZIP archive containing images."),
     csv: UploadFile = File(..., description="CSV file with metadata."),
     species_map: str = Form("{}", description="JSON string mapping CSV species names to DB IDs or 'CREATE_NEW'."),
@@ -506,15 +604,20 @@ async def upload_dataset_endpoint(
 ):
     csv_content = await csv.read()
     archive_content = await archive.read()
-
+    
+    # Using SessionLocal directly for the background task
     background_tasks.add_task(
-        process_dataset_upload_task,
+        process_dataset_upload_task, 
         SessionLocal, 
-        csv_content,
-        archive_content,
-        species_map,
+        csv_content, 
+        archive_content, 
+        species_map, 
         filename_column,
-        species_column
+        species_column,
+        current_user.id # Pass uploader_user_id
     )
+    
+    background_tasks.add_task(trigger_model_retraining.delay)
+    
 
-    return {"message": "Dataset upload (species created only via map, EXIF Geo/Time) received, processing started."} 
+    return {"message": "Dataset processing started in the background. Model retraining will be triggered."} 

@@ -6,7 +6,14 @@ from sklearn.neighbors import KernelDensity
 from scipy.stats import gaussian_kde
 import geopandas as gpd
 from shapely.ops import unary_union
+from shapely.wkt import loads as wkt_loads
 import warnings
+import logging # Import logging
+
+# Configure a basic logger (ideally this is done at application entry point)
+# For an assistant, we assume logging might be pre-configured or use basicConfig.
+# If not, this will set up a default logger.
+# logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
 def calculate_mcp(points: List[Tuple[float, float]], parameters: Dict[str, Any]) -> Optional[str]:
     """Calculates the Minimum Convex Polygon (MCP).
@@ -62,66 +69,83 @@ def calculate_mcp(points: List[Tuple[float, float]], parameters: Dict[str, Any])
     
     if isinstance(mcp_polygon, ShapelyPolygon):
         return mcp_polygon.wkt
-        return None
+    return None # Explicit return if not a polygon (e.g. Point or LineString for <3 unique points)
 
 def calculate_kde(
     points: np.ndarray,
-    h_meters: float, # Bandwidth in meters (converted from degrees in endpoint)
+    h_degrees: Optional[float] = None, # Changed to Optional, default None
     level_percent: float = 90.0,
     grid_size: int = 100,
-    # Add latitude for accurate conversion back if needed, or just use h_degrees directly
 ) -> Optional[Dict[str, Any]]:
     """Calculates the Kernel Density Estimation (KDE) contour polygon.
     
-    As described in section 5.2 of the thesis, this method creates density-based
-    contours using Gaussian kernel density estimation.
+    Note: This function performs calculations in geographic coordinates (degrees).
+    For highest accuracy in area and distance, consider projecting points to a
+    planar CRS before KDE and converting the resulting polygon back.
+    If 'h_degrees' is provided, it must be appropriate for degree units.
+    If 'h_degrees' is None, Silverman's rule will be used for bandwidth estimation.
 
     Args:
-        points: List of (longitude, latitude) tuples.
-        parameters: Dictionary containing:
-            - h_meters: Bandwidth parameter for KDE
-            - level_percent: Contour level (0-100) representing the percentage of points
-                    to include within the contour
-            - grid_size: Optional number of grid cells (default: 100)
+        points: NumPy array of (longitude, latitude) coordinates.
+        h_degrees: Optional. Bandwidth for KDE in decimal degrees. 
+                   If None, Silverman's rule is used.
+        level_percent: Contour level (0-100) representing the percentage of points
+                       to include within the contour.
+        grid_size: Number of grid cells (e.g., 100 for a 100x100 grid).
 
     Returns:
         Dictionary containing:
         - polygon_wkt: WKT string of the KDE contour polygon
         - grid_points: List of dictionaries with lat, lng, and density values
+        - max_density: Maximum density value found on the grid
+        Or None if calculation fails.
     """
-    if not points or len(points) < 3:
-        print(f"KDE: Not enough points ({len(points) if points else 0}). Returning None.")
+    if not isinstance(points, np.ndarray): # Ensure points is a numpy array
+        logging.warning("KDE: 'points' is not a NumPy array. Attempting conversion.")
+        try:
+            points = np.array(points)
+            if points.ndim != 2 or points.shape[1] != 2:
+                raise ValueError("Points array must be 2D with shape (n, 2).")
+        except Exception as e:
+            logging.error(f"KDE: Could not convert points to valid NumPy array: {e}")
+            return None
+
+    if len(points) < 3:
+        logging.info(f"KDE: Not enough points ({len(points)}). Requires at least 3. Returning None.")
         return None
     
-    h = h_meters
-    level_percent = level_percent
-    grid_size = grid_size
+    # Parameter validation
+    bw_method_for_kde: Any = None # To store the final bandwidth method
+    if h_degrees is not None:
+        if not (isinstance(h_degrees, (float, int)) and h_degrees > 0):
+            logging.error(f"KDE: Provided h_degrees ({h_degrees}) must be a positive number. Returning None.")
+            return None
+        bw_method_for_kde = h_degrees
+        logging.info(f"KDE: Using provided h_degrees: {h_degrees}")
+    else:
+        bw_method_for_kde = 'silverman'
+        logging.info("KDE: h_degrees not provided, using Silverman's rule for bandwidth estimation.")
 
-    print(f"KDE: Input points count: {len(points)}")
-    print(f"KDE: Parameters received - h_meters: {h}, level_percent: {level_percent}, grid_size: {grid_size}")
-
-    if h is None or level_percent is None:
-        print(f"KDE: Missing h_meters ({h}) or level_percent ({level_percent}). Returning None.")
+    if not (isinstance(level_percent, (float, int)) and 0 < level_percent <= 100):
+        logging.error(f"KDE: level_percent ({level_percent}) out of range (0-100). Returning None.")
+        return None
+    if not (isinstance(grid_size, int) and grid_size > 1):
+        logging.error(f"KDE: grid_size ({grid_size}) must be an integer greater than 1. Returning None.")
         return None
 
-    try:
-        h = float(h)
-        level_percent = float(level_percent)
-        if not (0 < level_percent <= 100):
-            print(f"KDE: level_percent ({level_percent}) out of range (0-100). Returning None.")
-            return None
-        if h <= 0:
-            print(f"KDE: h_meters ({h}) must be positive. Returning None.")
-            return None
+    logging.info(f"KDE: Input points count: {len(points)}")
+    logging.info(f"KDE: Parameters - h_degrees: {h_degrees}, level_percent: {level_percent}, grid_size: {grid_size}")
 
-        points_array = np.array(points)
+    try:
+        x_min, y_min = points.min(axis=0)
+        x_max, y_max = points.max(axis=0)
+        logging.info(f"KDE: Points bounds - X: [{x_min}, {x_max}], Y: [{y_min}, {y_max}]")
         
-        x_min, y_min = points_array.min(axis=0)
-        x_max, y_max = points_array.max(axis=0)
-        print(f"KDE: Points bounds - X: [{x_min}, {x_max}], Y: [{y_min}, {y_max}]")
-        
-        x_pad = (x_max - x_min) * 0.1 if (x_max - x_min) > 1e-6 else 0.1
-        y_pad = (y_max - y_min) * 0.1 if (y_max - y_min) > 1e-6 else 0.1
+        # Padding: 10% of range, or 0.1 units if range is very small (in degrees)
+        x_range = x_max - x_min
+        y_range = y_max - y_min
+        x_pad = x_range * 0.1 if x_range > 1e-6 else 0.1 
+        y_pad = y_range * 0.1 if y_range > 1e-6 else 0.1
         
         x_grid = np.linspace(x_min - x_pad, x_max + x_pad, grid_size)
         y_grid = np.linspace(y_min - y_pad, y_max + y_pad, grid_size)
@@ -129,70 +153,83 @@ def calculate_kde(
         xx, yy = np.meshgrid(x_grid, y_grid)
         positions = np.vstack([xx.ravel(), yy.ravel()])
         
-        print(f"KDE: Calculating gaussian_kde with bw_method (h parameter) = {h}")
-        kernel = gaussian_kde(points_array.T, bw_method=h)
+        logging.info(f"KDE: Calculating gaussian_kde with bw_method = {bw_method_for_kde}")
+        # points.T transposes (N,2) to (2,N) as required by gaussian_kde
+        kernel = gaussian_kde(points.T, bw_method=bw_method_for_kde) 
         z = np.reshape(kernel(positions).T, xx.shape)
         
-        # Calculate the density threshold for the contour
         density_threshold = np.percentile(z, 100 - level_percent)
-        print(f"KDE: Density Z min: {z.min()}, max: {z.max()}, threshold for {level_percent}%: {density_threshold}")
+        logging.info(f"KDE: Density Z min: {z.min():.4e}, max: {z.max():.4e}, threshold for {level_percent}%: {density_threshold:.4e}")
         
-        from matplotlib import pyplot as plt
-        plt.figure(figsize=(1,1))
+        from matplotlib import pyplot as plt # Local import
+        fig = plt.figure() # Create figure explicitly
         contour_set = plt.contour(xx, yy, z, levels=[density_threshold])
-        plt.close()
+        plt.close(fig) # Close the specific figure
         
-        all_segments = contour_set.allsegs[0]
-        print(f"KDE: Found {len(all_segments)} contour segments at threshold {density_threshold}.")
-
-        if len(all_segments) > 0:
-            valid_polygons = []
-            for seg in all_segments:
-                if len(seg) >= 3:
-                    try:
-                        poly = ShapelyPolygon(seg)
-                        if poly.is_valid and poly.area > 1e-9:
-                           valid_polygons.append(poly)
-                    except Exception as e_poly:
-                        print(f"KDE: Error creating ShapelyPolygon from segment: {e_poly}")
-            
-            if not valid_polygons:
-                print("KDE: No valid polygons found from contour segments.")
-                return None
-
-            final_geometry = unary_union(valid_polygons)
-            print(f"KDE: Final geometry type: {final_geometry.geom_type}")
-
-            if final_geometry.is_empty:
-                print("KDE: Final geometry is empty after union. Returning None.")
-                return None
-
-            # Create grid points with densities
-            grid_points = []
-            for i in range(grid_size):
-                for j in range(grid_size):
-                    lat = y_grid[j]
-                    lon = x_grid[i]
-                    density = z[j, i]
-                    if density > 0: # Only include points with non-zero density
-                        grid_points.append({
-                            'lat': lat,
-                            'lng': lon,
-                            'density': float(density) # Convert numpy float to Python float
-                        })
-
-            return {
-                'polygon_wkt': final_geometry.wkt,
-                'grid_points': grid_points,
-                'max_density': float(np.max(z)) # Include max density
-            }
-        else:
-            print("KDE: No contour segments found at the specified density level. Returning None.")
+        if not contour_set.allsegs or not contour_set.allsegs[0]:
+            logging.info("KDE: No contour segments found at the specified density level. This might be due to low data density or inappropriate bandwidth.")
             return None
             
+        all_segments = contour_set.allsegs[0]
+        logging.info(f"KDE: Found {len(all_segments)} contour segments at threshold {density_threshold:.4e}.")
+
+        valid_polygons = []
+        for i, seg in enumerate(all_segments):
+            if len(seg) >= 3: # Need at least 3 points for a polygon
+                try:
+                    poly = ShapelyPolygon(seg)
+                    if poly.is_valid:
+                        if poly.area > 1e-9: # Check for non-negligible area (in squared degrees)
+                           valid_polygons.append(poly)
+                        else:
+                           logging.debug(f"KDE: Segment {i} resulted in polygon with negligible area ({poly.area:.2e}). Skipping.")
+                    else:
+                       logging.warning(f"KDE: Segment {i} resulted in an invalid polygon. Attempting to buffer by 0.")
+                       buffered_poly = poly.buffer(0) # Try to fix invalid polygon
+                       if buffered_poly.is_valid and buffered_poly.area > 1e-9:
+                           valid_polygons.append(buffered_poly)
+                           logging.info(f"KDE: Segment {i} fixed by zero-buffering.")
+                       else:
+                           logging.warning(f"KDE: Zero-buffering failed or resulted in negligible area for segment {i}. Original WKT: {poly.wkt}. Skipping.")
+                except Exception as e_poly:
+                    logging.error(f"KDE: Error creating/validating ShapelyPolygon from segment {i}: {e_poly}")
+            else:
+                logging.debug(f"KDE: Segment {i} has less than 3 points ({len(seg)}). Skipping.")
+        
+        if not valid_polygons:
+            logging.warning("KDE: No valid polygons found from contour segments after processing.")
+            return None
+
+        final_geometry = unary_union(valid_polygons)
+        logging.info(f"KDE: Final geometry type: {final_geometry.geom_type}, Is empty: {final_geometry.is_empty}")
+
+        if final_geometry.is_empty:
+            logging.warning("KDE: Final geometry is empty after union. Returning None.")
+            return None
+
+        grid_points_data = []
+        if grid_size <= 200: # Avoid excessive data for large grids
+            for i_grid in range(grid_size):
+                for j_grid in range(grid_size):
+                    density = z[j_grid, i_grid] # Correct indexing for z (yy corresponds to rows)
+                    if density > 1e-9: # Only include points with non-negligible density
+                        grid_points_data.append({
+                            'lat': float(y_grid[j_grid]),
+                            'lng': float(x_grid[i_grid]),
+                            'density': float(density)
+                        })
+        else:
+            logging.info("KDE: Grid size > 200, skipping detailed grid_points data to save space.")
+
+
+        return {
+            'polygon_wkt': final_geometry.wkt,
+            'grid_points': grid_points_data,
+            'max_density': float(np.max(z))
+        }
+            
     except Exception as e:
-        warnings.warn(f"Error in KDE calculation: {e}")
-        print(f"KDE: Exception: {e}")
+        logging.exception("KDE: Unhandled exception during calculation.") # Use logging.exception to include stack trace
         return None
 
 def calculate_overlap(habitat1_wkt: str, habitat2_wkt: str) -> Dict[str, float]:
@@ -213,8 +250,8 @@ def calculate_overlap(habitat1_wkt: str, habitat2_wkt: str) -> Dict[str, float]:
     """
     try:
         # Create polygons from WKT
-        poly1 = ShapelyPolygon.from_wkt(habitat1_wkt)
-        poly2 = ShapelyPolygon.from_wkt(habitat2_wkt)
+        poly1 = wkt_loads(habitat1_wkt)
+        poly2 = wkt_loads(habitat2_wkt)
         
         # Calculate areas
         intersection = poly1.intersection(poly2)

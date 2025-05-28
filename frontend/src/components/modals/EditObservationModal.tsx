@@ -53,11 +53,7 @@ export const EditObservationModal: React.FC<EditObservationModalProps> = ({
   }, [observation, speciesList]);
 
   const handleSaveClick = async () => {
-    if (!observation || !selectedSpeciesId || !observation.species) return;
-    if (String(observation.species.id) === selectedSpeciesId) {
-        onClose();
-        return;
-    }
+    if (!observation || !selectedSpeciesId) return;
     await onSave(observation.id, parseInt(selectedSpeciesId, 10));
   };
 
@@ -141,7 +137,7 @@ export const EditObservationModal: React.FC<EditObservationModalProps> = ({
           <Button 
              type="button" 
              onClick={handleSaveClick} 
-             disabled={isLoading || !selectedSpeciesId || (observation.species && observation.species.id === parseInt(selectedSpeciesId, 10))}
+             disabled={isLoading}
            >
             {isLoading ? "Сохранение..." : "Сохранить"}
           </Button>
