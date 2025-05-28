@@ -151,7 +151,7 @@ const DeletionMapComponentInternal: React.FC<DeletionMapProps> = ({ locations, s
                  }
     
                  // Clear existing shape if selectedArea is cleared externally
-                 if (!selectedArea && drawnLayerRef.current) {
+                 if ((!selectedArea || (typeof selectedArea === 'object' && Object.keys(selectedArea).length === 0)) && drawnLayerRef.current) {
                     mapWithGeoman.removeLayer(drawnLayerRef.current);
                     drawnLayerRef.current = null;
                  }
@@ -244,6 +244,7 @@ const DeletionMapComponentInternal: React.FC<DeletionMapProps> = ({ locations, s
         ? [validLocations[0].location.coordinates[1], validLocations[0].location.coordinates[0]]
         : [55.751244, 37.618423]; // Default to Moscow if no locations
     console.log('[DeletionMapComponent] Map center:', JSON.stringify(center)); // DEBUG
+    const markerClusterKey = validLocations.map(l => l.id).join('-');
 
     return (
         <MapContainer id="deletion-map-container-stable" key="deletion-map-stable" center={center} zoom={10} style={{ height: '400px', width: '100%' }} ref={mapRef} attributionControl={false}>
@@ -252,7 +253,7 @@ const DeletionMapComponentInternal: React.FC<DeletionMapProps> = ({ locations, s
                 attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
             />
             {/* Wrap Markers with MarkerClusterGroup */}
-            <MarkerClusterGroup>
+            <MarkerClusterGroup key={markerClusterKey}>
                 {validLocations.map(loc => (
                     <Marker key={loc.id} position={[loc.location!.coordinates[1], loc.location!.coordinates[0]]}>
                          <Popup>
@@ -1341,10 +1342,10 @@ export default function AdminPage() {
                 {/* Delete by Area Card (Full Width on Medium Screens) */}
                 <Card className="md:col-span-3">
                   <CardHeader><CardTitle>Удалить по области</CardTitle></CardHeader>
-                  <CardContent>
+                  <CardContent className="flow-root">
                     <Form {...deleteAreaForm}>
-                      <form onSubmit={deleteAreaForm.handleSubmit(onDeleteByArea)} className="space-y-4">
-                        <FormField control={deleteAreaForm.control} name="area" render={({ field }) => (<FormItem><FormLabel>Карта</FormLabel><FormControl><div style={{ height: '300px' }}> <DeletionMapComponent locations={allObservationMapData} selectedArea={field.value} onAreaSelect={field.onChange} disabled={isDeleting} /> </div></FormControl><FormMessage /></FormItem>)} />
+                      <form onSubmit={deleteAreaForm.handleSubmit(onDeleteByArea)} className="space-y-4 p-4">
+                        <FormField control={deleteAreaForm.control} name="area" render={({ field }) => (<FormItem><FormLabel>Карта</FormLabel><FormControl><div className="h-[400px] w-full overflow-hidden"> <DeletionMapComponent locations={allObservationMapData} selectedArea={field.value} onAreaSelect={field.onChange} disabled={isDeleting} /> </div></FormControl><FormMessage /></FormItem>)} />
                         <Button type="submit" variant="destructive" disabled={isDeleting}>Удалить</Button>
                       </form>
                     </Form>

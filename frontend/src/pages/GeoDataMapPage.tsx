@@ -100,7 +100,7 @@ function GeoDataMapPage(): JSX.Element {
   const [mcpInputParams, setMcpInputParams] = useState<{ percentage: number }>({ percentage: 95 });
   const [kdeInputParams, setKdeInputParams] = useState<{ h_meters: number; level_percent: number; grid_size: number }>({ 
     h_meters: 1000,
-    level_percent: 90, 
+    level_percent: 70, 
     grid_size: 100 
   });
 

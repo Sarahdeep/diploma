@@ -73,9 +73,9 @@ def run_habitat_calculation(
     elif method.lower() == "kde":
         polygon_wkt_string = calculate_kde(
             points, 
-            h_meters=request_params.parameters.get('h_meters'),  # Извлекаем h_meters как число
-            level_percent=request_params.parameters.get('level_percent', 90.0),  # Извлекаем level_percent с дефолтным значением
-            grid_size=request_params.parameters.get('grid_size', 100)  # Извлекаем grid_size с дефолтным значением
+            h_degrees=request_params.parameters.get('h_meters'), 
+            level_percent=request_params.parameters.get('level_percent', 70.0),
+            grid_size=request_params.parameters.get('grid_size', 100)
         )
     else:
         print(f"Background task: Unknown method: {method} for species {species_id}")
@@ -181,9 +181,9 @@ async def preview_habitat_calculation(
     elif method.lower() == "kde":
         result = calculate_kde(
             points, 
-            h_meters=request_params.parameters.get('h_meters'),  # Извлекаем h_meters как число
-            level_percent=request_params.parameters.get('level_percent', 90.0),  # Извлекаем level_percent с дефолтным значением
-            grid_size=request_params.parameters.get('grid_size', 100)  # Извлекаем grid_size с дефолтным значением
+            h_degrees=request_params.parameters.get('h_meters'),  # Changed h_meters to h_degrees
+            level_percent=request_params.parameters.get('level_percent', 70.0),
+            grid_size=request_params.parameters.get('grid_size', 100)
         )
     
     calculated_polygon_geojson_dict = None

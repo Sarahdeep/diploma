@@ -119,7 +119,7 @@ const AnalysisPage: React.FC = () => {
       time_step_days: 7,
       observation_window_days: 30,
       kde_h_meters: 10000,
-      kde_level_percent: 70,
+      kde_level_percent: 55,
       kde_grid_size: 100,
     };
 
@@ -218,7 +218,23 @@ const AnalysisPage: React.FC = () => {
     smooth: true,
     xAxis: { title: { text: 'Время' } },
     yAxis: { title: { text: 'Индекс пересечения' }, min: 0, max: 1 },
-    tooltip: { showCrosshairs: true, shared: true },
+    tooltip: {
+      showCrosshairs: true,
+      shared: true,
+      items: [
+        {
+          channel: 'y', // Corresponds to the yField: 'overlapValue'
+          valueFormatter: (value: number | null) => {
+            // console.log('Item valueFormatter value:', value);
+            if (value === null) return 'Нет данных';
+            if (typeof value === 'number') return value.toFixed(3);
+            return 'N/A';
+          },
+          // Optionally, customize the name if needed, though it defaults to yField or series name
+          // name: 'Индекс' 
+        }
+      ]
+    },
   };
   
   const getSpeciesColor = (speciesId: number): string => {
