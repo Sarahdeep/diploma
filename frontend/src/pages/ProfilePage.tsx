@@ -85,7 +85,7 @@ const ProfilePage: React.FC = () => {
   }, []);
 
   if (!user) {
-    return <div className="flex justify-center items-center h-screen">Loading user profile...</div>;
+    return <div className="flex justify-center items-center h-screen">Загрузка профиля пользователя...</div>;
   }
 
   const handleLogout = async () => {
@@ -94,6 +94,7 @@ const ProfilePage: React.FC = () => {
       navigate('/login');
     } catch (error) {
       console.error("Failed to logout:", error);
+      toast.error("Ошибка выхода из системы.");
     }
   };
 
@@ -108,13 +109,13 @@ const ProfilePage: React.FC = () => {
         formData.append('username', nickname.trim());
         try {
           await updateUserProfile(formData);
-          toast.success("Nickname updated successfully.");
+          toast.success("Имя пользователя успешно обновлено.");
         } catch (error) {
-          toast.error("Failed to update nickname.");
+          toast.error("Не удалось обновить имя пользователя.");
           setNickname(user.username);
         }
       } else if (nickname.trim() === ''){
-        toast.error("Nickname cannot be empty.");
+        toast.error("Имя пользователя не может быть пустым.");
         setNickname(user?.username || '');
       }
     }
@@ -131,21 +132,15 @@ const ProfilePage: React.FC = () => {
 
   const handleAvatarSave = async () => {
     if (avatarFile && user) {
-      console.log('Attempting to save avatar. avatarFile details:', avatarFile);
-      console.log('Is avatarFile a File instance?', avatarFile instanceof File);
-      console.log('avatarFile.name:', avatarFile.name);
-      console.log('avatarFile.size:', avatarFile.size);
-      console.log('avatarFile.type:', avatarFile.type);
-
       const formData = new FormData();
       formData.append('avatar', avatarFile);
       
       try {
         await updateUserProfile(formData);
-        toast.success("Avatar updated successfully.");
+        toast.success("Аватар успешно обновлен.");
         setAvatarFile(null);
       } catch (error) {
-        toast.error("Failed to update avatar.");
+        toast.error("Не удалось обновить аватар.");
         setAvatarPreview(user.avatar_url || null);
         setAvatarFile(null);
       }
@@ -209,7 +204,7 @@ const ProfilePage: React.FC = () => {
           <div className="flex items-center space-x-4">
             <div className="relative group">
               <Avatar className="h-24 w-24 border-4 border-background group-hover:opacity-80 transition-opacity">
-                <AvatarImage src={avatarPreview || undefined} alt={user.username} />
+                <AvatarImage src={avatarPreview || undefined} alt={nickname} />
                 <AvatarFallback>{nickname?.charAt(0).toUpperCase()}</AvatarFallback>
               </Avatar>
               <Button
@@ -219,7 +214,7 @@ const ProfilePage: React.FC = () => {
                 onClick={() => document.getElementById('avatarInput')?.click()}
               >
                 <Edit3Icon className="h-4 w-4" />
-                <span className="sr-only">Edit Avatar</span>
+                <span className="sr-only">Изменить аватар</span>
               </Button>
               <Input
                 type="file"
@@ -237,15 +232,16 @@ const ProfilePage: React.FC = () => {
                     value={nickname}
                     onChange={handleNicknameChange}
                     className="text-2xl font-bold"
+                    placeholder="Ваше имя пользователя"
                   />
-                  <Button onClick={handleNicknameEditToggle} size="icon">
+                  <Button onClick={handleNicknameEditToggle} size="icon" aria-label="Сохранить имя пользователя">
                     <SaveIcon className="h-5 w-5" />
                   </Button>
                 </div>
               ) : (
                 <div className="flex items-center space-x-2">
                   <CardTitle className="text-2xl font-bold">{nickname}</CardTitle>
-                  <Button onClick={handleNicknameEditToggle} variant="ghost" size="icon">
+                  <Button onClick={handleNicknameEditToggle} variant="ghost" size="icon" aria-label="Редактировать имя пользователя">
                     <Edit3Icon className="h-5 w-5" />
                   </Button>
                 </div>
@@ -257,24 +253,24 @@ const ProfilePage: React.FC = () => {
         <CardContent className="p-6 space-y-6">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div>
-              <Label className="text-sm font-medium text-muted-foreground">Role</Label>
+              <Label className="text-sm font-medium text-muted-foreground">Роль</Label>
               <p className="text-lg font-semibold">{user.role}</p>
             </div>
             <div>
-              <Label className="text-sm font-medium text-muted-foreground">Joined</Label>
+              <Label className="text-sm font-medium text-muted-foreground">Дата регистрации</Label>
               <p className="text-lg font-semibold">{new Date(user.created_at).toLocaleDateString()}</p>
             </div>
             <div>
-              <Label className="text-sm font-medium text-muted-foreground">Active</Label>
-              <p className="text-lg font-semibold">{user.is_active ? 'Yes' : 'No'}</p>
+              <Label className="text-sm font-medium text-muted-foreground">Активен</Label>
+              <p className="text-lg font-semibold">{user.is_active ? 'Да' : 'Нет'}</p>
             </div>
             <div>
-              <Label className="text-sm font-medium text-muted-foreground">Verified</Label>
-              <p className="text-lg font-semibold">{user.is_verified ? 'Yes' : 'No'}</p>
+              <Label className="text-sm font-medium text-muted-foreground">Подтвержден</Label>
+              <p className="text-lg font-semibold">{user.is_verified ? 'Да' : 'Нет'}</p>
             </div>
             {user.last_login && (
               <div className="md:col-span-2">
-                <Label className="text-sm font-medium text-muted-foreground">Last Login</Label>
+                <Label className="text-sm font-medium text-muted-foreground">Последний вход</Label>
                 <p className="text-lg font-semibold">{new Date(user.last_login).toLocaleString()}</p>
               </div>
             )}
@@ -282,9 +278,9 @@ const ProfilePage: React.FC = () => {
           
           {avatarFile && (
             <div className="mt-6 flex flex-col items-center">
-                <img src={avatarPreview || undefined} alt="Avatar Preview" className="w-32 h-32 rounded-full object-cover mb-4 border"/>
+                <img src={avatarPreview || undefined} alt="Предпросмотр аватара" className="w-32 h-32 rounded-full object-cover mb-4 border"/>
                 <Button onClick={handleAvatarSave} className="w-full sm:w-auto">
-                    <UploadCloudIcon className="mr-2 h-4 w-4" /> Save Avatar Changes
+                    <UploadCloudIcon className="mr-2 h-4 w-4" /> Сохранить изменения аватара
                 </Button>
             </div>
           )}
@@ -292,12 +288,12 @@ const ProfilePage: React.FC = () => {
         </CardContent>
         <CardContent className="p-6 border-t">
           <Button onClick={handleLogout} variant="destructive" className="w-full">
-            Logout
+            Выйти
           </Button>
         </CardContent>
       </Card>
 
-      <Card className="mb-6">
+      <Card className="mt-8 mb-6">
         <CardHeader>
           <CardTitle>Мои наблюдения</CardTitle>
           <CardDescription>Здесь вы можете просматривать, редактировать и удалять свои загруженные наблюдения.</CardDescription>
@@ -305,7 +301,7 @@ const ProfilePage: React.FC = () => {
         <CardContent>
           <ObservationTable 
             observations={observations}
-            speciesList={speciesList} // Pass speciesList here
+            speciesList={speciesList}
             isLoading={isLoading}
             currentPage={currentPage}
             totalPages={totalPages}
@@ -323,7 +319,7 @@ const ProfilePage: React.FC = () => {
           onSave={handleSaveEdit}
           observation={selectedObservation}
           speciesList={speciesList}
-          isLoading={isProcessingAction} 
+          isLoading={isProcessingAction}
         />
       )}
     </div>

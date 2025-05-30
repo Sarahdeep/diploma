@@ -339,7 +339,7 @@ export default function ObservationsPage() {
 
       {/* Filters */}
       <div className="space-y-4">
-        <div className="flex justify-between items-center">
+        <div className="flex justify-between items-center mb-4">
           <h2 className="text-lg font-semibold">Фильтры</h2>
           <Button 
             variant="outline" 
@@ -348,8 +348,8 @@ export default function ObservationsPage() {
             Сбросить фильтры
           </Button>
         </div>
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-          <div>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 items-start">
+          <div className="flex flex-col space-y-1">
             <DateRangeSelector
               value={dateRange}
               onChange={(dates, dateStrings) => {
@@ -357,27 +357,25 @@ export default function ObservationsPage() {
               }}
             />
           </div>
-          <div>
-            <Label>Вид</Label>
+          <div className="flex flex-col space-y-1">
+            <Label htmlFor="speciesFilter" className="text-sm font-medium">Вид</Label>
             <Select 
               onValueChange={(value) => {
                 setFilterSpecies(value);
-                setObservations([]);
-                setPage(0);
-                setHasMore(true);
               }} 
               value={filterSpecies}
             >
-              <SelectTrigger><SelectValue placeholder="Все виды" /></SelectTrigger>
+              <SelectTrigger id="speciesFilter"><SelectValue placeholder="Все виды" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="ALL_SPECIES">Все</SelectItem>
                 {speciesList.map(sp => <SelectItem key={sp.id} value={String(sp.id)}>{sp.name}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>
-          <div className="space-y-2">
-            <Label>Уверенность (мин.): {(filterConfidence * 100).toFixed(0)}%</Label>
+          <div className="flex flex-col space-y-1">
+            <Label htmlFor="confidenceFilter" className="text-sm font-medium">Уверенность (мин.): {(filterConfidence * 100).toFixed(0)}%</Label>
             <Input 
+              id="confidenceFilter"
               type="range"
               min="0"
               max="1"
@@ -385,11 +383,8 @@ export default function ObservationsPage() {
               value={filterConfidence}
               onChange={(e) => {
                 setFilterConfidence(parseFloat(e.target.value));
-                setObservations([]);
-                setPage(0);
-                setHasMore(true);
               }}
-              className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer dark:bg-gray-700"
+              className="w-full cursor-pointer"
             />
           </div>
         </div>

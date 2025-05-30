@@ -19,8 +19,11 @@ const DateRangeSelector: React.FC<DateRangeSelectorProps> = ({ value, onChange }
   const antDValue: [Dayjs | null, Dayjs | null] | null = value ? [value[0] ? dayjs(value[0]) : null, value[1] ? dayjs(value[1]) : null] : null;
 
   return (
-    <div style={{ marginBottom: 16 }}>
-      <label htmlFor="date-range-picker" style={{ display: 'block', marginBottom: 4 }}>
+    <div>
+      <label 
+        htmlFor="date-range-picker" 
+        className="text-sm font-medium block mb-1"
+      >
         Период наблюдений:
       </label>
       <RangePicker

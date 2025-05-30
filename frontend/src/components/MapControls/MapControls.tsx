@@ -59,7 +59,7 @@ const MapControls: React.FC<MapControlsProps> = ({
 
   isOverallLoading = false,
 }) => (
-  <Card title="Map Controls" size="small" style={{ borderRadius: 8 }}>
+  <Card title="Управление картой" size="small" style={{ borderRadius: 8 }}>
     <Spin spinning={isOverallLoading}>
       <SpeciesSelector
         speciesList={speciesList}

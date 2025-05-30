@@ -13,6 +13,7 @@ import secrets
 from fastapi_mail import FastMail, MessageSchema, ConnectionConfig
 from pydantic import EmailStr
 import json
+import logging
 
 router = APIRouter(
     tags=["Authentication"],
@@ -259,22 +260,28 @@ async def refresh_token(
     response: Response,
     db: Session = Depends(get_db)
 ):
+    logging.warning(f"AUTH.PY - REFRESH Endpoint - Request headers: {request.headers}")
+    logging.warning(f"AUTH.PY - REFRESH Endpoint - Request cookies: {request.cookies}")
     incoming_refresh_token = request.cookies.get(REFRESH_TOKEN_COOKIE_NAME)
     if not incoming_refresh_token:
+        logging.error("AUTH.PY - REFRESH Endpoint - Refresh token 'jid' is MISSING from cookies.")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Refresh token missing"
         )
+    logging.warning(f"AUTH.PY - REFRESH Endpoint - Found refresh token 'jid': {incoming_refresh_token[:20]}...")
 
     try:
         payload = jwt.decode(incoming_refresh_token, REFRESH_SECRET_KEY, algorithms=[ALGORITHM])
         email: str = payload.get("sub")
         if email is None:
+            logging.error(f"AUTH.PY - REFRESH Endpoint - Email is None in refresh token payload: {payload}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid refresh token content"
             )
-    except JWTError:
+    except JWTError as e:
+        logging.error(f"AUTH.PY - REFRESH Endpoint - JWTError decoding refresh token: {e}, Token: {incoming_refresh_token[:20]}...")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired refresh token"
@@ -282,6 +289,7 @@ async def refresh_token(
     
     user = db.query(User).filter(User.email == email).first()
     if not user or not user.is_active:
+        logging.error(f"AUTH.PY - REFRESH Endpoint - User {email} not found or inactive.")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found or inactive for refresh token"
@@ -453,13 +461,13 @@ async def logout(
     
     # Clear the refresh token cookie
     response.delete_cookie(REFRESH_TOKEN_COOKIE_NAME, path="/", 
-                           # domain=None, # Specify domain if needed for cross-subdomain cookies
-                           # secure=True, # UNCOMMENT IN PRODUCTION
-                           # httponly=True, # UNCOMMENT IN PRODUCTION
-                           # samesite="lax" # UNCOMMENT IN PRODUCTION
+                           # domain=None, 
+                           # secure=True, 
+                           # httponly=True, 
+                           # samesite="lax"
                            samesite="lax" if not os.getenv("DEV_MODE") else "none",
                            secure=True if not os.getenv("DEV_MODE") else False,
-                           httponly=True # always httponly for this cookie
+                           httponly=True 
                            )
     
     return {"message": "Successfully logged out"}
